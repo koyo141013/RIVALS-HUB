@@ -1,0 +1,2134 @@
+-- RIVALS HUB V0.0.3.0 | Madium | GUI 버전
+-- RightShift = 창 열기/닫기, 에임봇 ON이면 상시 작동(홀드 불필요)
+
+if getgenv().RivalsAimESP_Loaded then
+    pcall(function() getgenv().RivalsAimESP_Cleanup() end)
+    task.wait(0.1)
+end
+getgenv().RivalsAimESP_Loaded = true
+
+local cloneref = (cloneref or clone_ref or function(x) return x end)
+local Players = cloneref(game:GetService("Players"))
+local RunService = cloneref(game:GetService("RunService"))
+local UserInputService = cloneref(game:GetService("UserInputService"))
+local Workspace = cloneref(game:GetService("Workspace"))
+local StarterGui = cloneref(game:GetService("StarterGui"))
+local CoreGui = cloneref(game:GetService("CoreGui"))
+local GuiService = cloneref(game:GetService("GuiService"))
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+local HUB_VERSION = "V0.0.3.0"
+
+-- ============ Config ============
+getgenv().RivalsConfig = getgenv().RivalsConfig or {
+    Aimbot = {
+        Enabled = false,
+        HoldKey = Enum.UserInputType.MouseButton2,
+        FOV = 120,
+        Strength = 85,
+        TargetPart = "Head",
+        TeamCheck = true,
+        WallCheck = true,
+        AliveCheck = true,
+        MaxDistance = 1000,
+    },
+    ESP = {
+        Enabled = false,
+        Boxes = false,
+        HealthBar = false,
+        Names = false,
+        Distance = false,
+        Snaplines = false,
+        TeamCheck = true,
+        MaxDistance = 1000,
+        BoxColor = Color3.fromRGB(255, 50, 50),
+        TeamColor = Color3.fromRGB(50, 150, 255),
+        HiddenColor = Color3.fromRGB(150, 150, 150),
+    },
+    Fly = {
+        Enabled = false,
+        Speed = 100,
+    },
+    Walk = {
+        Enabled = false,
+        Speed = 32,
+    },
+    Noclip = {
+        Enabled = false,
+    },
+    InfJump = {
+        Enabled = false,
+    },
+}
+local Config = getgenv().RivalsConfig
+
+-- ============ Rage Bot Config ============
+local S = {
+    walkOn = false, fightOn = false, espOn = false, namesOn = false, healthOn = false, noclipOn = false,
+    aimbotOn = false, aimbotStrength = 40, aimbotHitPart = "Both", silentAimOn = false, silentAimFOV = 350,
+    silentAimTargetMode = "Players", silentAimHitPart = "Body",
+    ragebotOn = false, ragebotStability = 0.15, ragebotShootFrames = 1,
+    auraOn = false, triggerBotOn = false, wallbangOn = false,
+    godModeOn = false, orbitOn = false, voidSpanOn = false, infiniteJumpOn = false,
+    forceThirdPersonOn = false, teleporterOn = false, lastTeleportTick = 0, teleportDistance = 50000,
+    walkSpeed = 16, fightSpeed = 50, showKeybindsOn = true, showWatermarkOn = true,
+    autoLoad = false,
+    espEnemyName = true, espEnemyDistance = false, espEnemyRank = false, espEnemyWinstreak = false,
+    espEnemyHealth = true, espNumberEnemy = false, espHeldWeapon = false, espEnemyDeflecting = false,
+    espGeometry = false, espEnemyBox = true,
+    spoofWinStreak = false, spoofLevel = false, spoofRankedELO = false,
+    spoofNametagStatus = false, spoofInfluencer = false, spoofRobloxEmployee = false, spoofNosniyTeam = false,
+    spoofWinStreakValue = 99, spoofLevelValue = 999,
+    rivRapidFire = false,
+    rivNoRecoil = false,
+}
+local selectedTargets = {}
+local _rivReady = true
+local env = (getgenv and getgenv()) or _G
+env._silentRageActive = false
+env._silentAimTarget = nil
+env._ragebotActive = false
+env._rivRapidFire = false
+env._rivNoRecoil = false
+local toggleFight = nil
+local toggleNoclip = nil
+local toggleEsp = nil
+
+local function getBestTarget(fovLimit)
+    local currentCam = Workspace.CurrentCamera or Workspace:FindFirstChildOfClass("Camera")
+    if not currentCam then return nil end
+    local mousePos = UserInputService:GetMouseLocation()
+    local bestTarget = nil
+    local shortestDist = fovLimit or 150
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local hum = p.Character:FindFirstChildOfClass("Humanoid")
+            local head = p.Character:FindFirstChild("Head")
+            if hum and hum.Health > 0 and head and head:IsA("BasePart") then
+                local ok, screenPos, onScreen = pcall(function()
+                    return currentCam:WorldToViewportPoint(head.Position)
+                end)
+                if ok and onScreen then
+                    local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+                    if dist < shortestDist then
+                        shortestDist = dist
+                        bestTarget = head
+                    end
+                end
+            end
+        end
+    end
+    return bestTarget
+end
+
+local function RagebotStep()
+    if not S.ragebotOn or MenuOpen then return end
+    local target = getBestTarget(S.silentAimFOV)
+    if not target then return end
+    local cam = Workspace.CurrentCamera
+    if not cam then return end
+    local pos, vis = cam:WorldToViewportPoint(target.Position)
+    if not vis then return end
+    local mouse = UserInputService:GetMouseLocation()
+    local dx = pos.X - mouse.X
+    local dy = pos.Y - mouse.Y
+    local sens = S.ragebotStability
+    pcall(mousemoverel, math.round(dx * sens), math.round(dy * sens))
+end
+
+-- ============ Rage Bot Full Module ============
+local _killDesyncActive = false
+local _killDesyncConn = nil
+local _killDesyncRestoreName = "AntiRivalKillDesyncRestore"
+local FAR_DISTANCE = 50000000
+
+local function countAliveEnemies()
+    local count = 0
+    pcall(function()
+        local LP = Players.LocalPlayer
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer then
+                local char = plr.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    count = count + 1
+                end
+            end
+        end
+    end)
+    return count
+end
+
+local function StopKillDesync()
+    _killDesyncActive = false
+    if _killDesyncConn then
+        pcall(function() _killDesyncConn:Disconnect() end)
+        _killDesyncConn = nil
+    end
+    pcall(function()
+        RunService:UnbindFromRenderStep(_killDesyncRestoreName)
+    end)
+end
+
+local function StartKillDesync()
+    if countAliveEnemies() > 0 then return end
+    if _killDesyncActive then return end
+    if not S.ragebotOn then return end
+    _killDesyncActive = true
+    local LP = LocalPlayer
+    local lastFarTp = 0
+    local localAnchorCF = nil
+    local function getRoot()
+        local char = LP.Character
+        return char and char:FindFirstChild("HumanoidRootPart")
+    end
+    print("[Anti-rival] Ragebot: all enemies dead → strong far desync TP")
+    _killDesyncConn = RunService.Heartbeat:Connect(function()
+        if not _killDesyncActive then return end
+        if countAliveEnemies() > 0 then StopKillDesync(); return end
+        if not S.ragebotOn then StopKillDesync(); return end
+        local r = getRoot()
+        if not r then return end
+        if not localAnchorCF then localAnchorCF = r.CFrame end
+        local now = os.clock()
+        if now - lastFarTp >= 3 then
+            lastFarTp = now
+            local ang = math.random() * math.pi * 2
+            local far = Vector3.new(
+                math.cos(ang) * 500000 + math.random(-2000, 2000),
+                150000 + math.random(-5000, 5000),
+                math.sin(ang) * 500000 + math.random(-2000, 2000)
+            )
+            env._killDesyncFarPos = far
+        end
+        local farPos = env._killDesyncFarPos or (r.Position + Vector3.new(500000, 150000, 0))
+        r.CFrame = CFrame.new(farPos + Vector3.new(math.random(-120, 120), math.random(-40, 40), math.random(-120, 120)))
+        r.AssemblyLinearVelocity = Vector3.zero
+        r.AssemblyAngularVelocity = Vector3.zero
+        RunService:BindToRenderStep(_killDesyncRestoreName, Enum.RenderPriority.Camera.Value - 1, function()
+            local r2 = getRoot()
+            if r2 and localAnchorCF then
+                r2.CFrame = localAnchorCF
+                r2.AssemblyLinearVelocity = Vector3.zero
+                r2.AssemblyAngularVelocity = Vector3.zero
+            end
+            pcall(function() RunService:UnbindFromRenderStep(_killDesyncRestoreName) end)
+        end)
+    end)
+end
+
+local _killConnections = {}
+local _tracked = {}
+local function _onEnemyDied()
+    if not env._ragebotActive then return end
+    task.defer(function() task.wait(0.15); StartKillDesync() end)
+end
+local function _trackPlayer(plr)
+    if plr == LocalPlayer then return end
+    local function hookChar(char)
+        if not char then return end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum and not _tracked[hum] then
+            _tracked[hum] = true
+            table.insert(_killConnections, hum.Died:Connect(_onEnemyDied))
+            table.insert(_killConnections, hum.HealthChanged:Connect(function(hp) if hp <= 0 then _onEnemyDied() end end))
+        end
+    end
+    if plr.Character then hookChar(plr.Character) end
+    table.insert(_killConnections, plr.CharacterAdded:Connect(hookChar))
+end
+for _, plr in ipairs(Players:GetPlayers()) do _trackPlayer(plr) end
+table.insert(_killConnections, Players.PlayerAdded:Connect(_trackPlayer))
+
+local function StartUserRagebot()
+    local __ctrl = setmetatable({}, {
+        __index = function(_, name)
+            local ok, svc = pcall(function() return game:GetService(name) end)
+            if ok and svc then
+                if cloneref then return cloneref(svc) end
+                return svc
+            end
+            return nil
+        end
+    })
+    local genv = getgenv()
+    if genv.__s9t0u1 then pcall(function() genv.__s9t0u1:Shutdown() end) end
+    local _Players = __ctrl.Players
+    local _RunService = __ctrl.RunService
+    local _ReplicatedStorage = __ctrl.ReplicatedStorage
+    local _LP = _Players.LocalPlayer
+    local PlayerScripts = _LP.PlayerScripts
+    local GunModule, UtilityModule
+    pcall(function() GunModule = require(PlayerScripts.Modules.ItemTypes.Gun) end)
+    pcall(function() UtilityModule = require(_ReplicatedStorage.Modules.Utility) end)
+    if not GunModule or not UtilityModule then warn("[Anti-rival] Ragebot modules not found"); return end
+    local CharHelper = setmetatable({}, {
+        __index = function(_, key)
+            local char = _LP.Character
+            if not char then return nil end
+            if key == "__root" then return char:FindFirstChild("HumanoidRootPart")
+            elseif key == "__head" then return char:FindFirstChild("Head") end
+            return nil
+        end
+    })
+    genv.__s9t0u1 = {}
+    local Controller = genv.__s9t0u1
+    local killConns = {}
+    local tracked = {}
+    local function onEnemyDied()
+        if not Controller.__active then return end
+        task.defer(function() task.wait(0.15); StartKillDesync() end)
+    end
+    local function trackPlayer(plr)
+        if plr == _LP then return end
+        local function hookChar(char)
+            if not char then return end
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum and not tracked[hum] then
+                tracked[hum] = true
+                table.insert(killConns, hum.Died:Connect(onEnemyDied))
+                table.insert(killConns, hum.HealthChanged:Connect(function(hp) if hp <= 0 then onEnemyDied() end end))
+            end
+        end
+        if plr.Character then hookChar(plr.Character) end
+        table.insert(killConns, plr.CharacterAdded:Connect(hookChar))
+    end
+    for _, plr in ipairs(_Players:GetPlayers()) do trackPlayer(plr) end
+    table.insert(killConns, _Players.PlayerAdded:Connect(trackPlayer))
+    function Controller:__init()
+        self.__active = true
+        self.__target = nil
+        self.__desync = false
+        self.__conn1 = nil
+        self.__conn2 = nil
+        self.__task1 = nil
+        self.__oldfunc = nil
+        self:__setup()
+    end
+    function Controller:__setup()
+        self.__conn1 = _RunService.Heartbeat:Connect(function()
+            if not self.__active then return end
+            self.__target = self:__find()
+        end)
+        local originalShoot = GunModule.StartShooting
+        self.__oldfunc = originalShoot
+        GunModule.StartShooting = function(gun, ...)
+            local results = {originalShoot(gun, ...)}
+            if not gun.ClientFighter or not gun.ClientFighter.IsLocalPlayer then return unpack(results) end
+            local data = results[3]
+            if not data or typeof(data) ~= "table" then return unpack(results) end
+            results[4] = true
+            local target = self.__target
+            if not self.__active or not target or not target.Character then return unpack(results) end
+            if not self.__desync or self.__curr ~= target then
+                self:__desync_start(target)
+                local stab = tonumber(env._ragebotStability) or tonumber(S.ragebotStability) or 0.15
+                task.wait(math.clamp(stab, 0.01, 1))
+            end
+            if self.__task1 then task.cancel(self.__task1); self.__task1 = nil end
+            local head = target.Character:FindFirstChild("Head")
+            if not head then return unpack(results) end
+            local headPos = head.Position
+            local headCF = head.CFrame
+            local offset = headCF:ToObjectSpace(CFrame.new(headPos + Vector3.new(math.random() * 0.1, math.random() * 0.1, math.random() * 0.1)))
+            data[utf8.char(0)] = UtilityModule:EncodeCFrame(CFrame.new(headPos, headPos + head.CFrame.LookVector))
+            data[utf8.char(1)] = UtilityModule:EncodeCFrame(CFrame.new(headPos))
+            data[utf8.char(2)] = head
+            data[utf8.char(3)] = UtilityModule:EncodeCFrame(offset)
+            local frames = tonumber(env._ragebotShootFrames) or tonumber(S.ragebotShootFrames) or 1
+            self.__task1 = task.delay(0.05 * math.clamp(frames, 1, 10), function() self:__desync_stop() end)
+            return unpack(results)
+        end
+    end
+    function Controller:__find()
+        local myChar = _LP.Character
+        if not myChar then return nil end
+        local myRoot = myChar:FindFirstChild("HumanoidRootPart")
+        if not myRoot then return nil end
+        local closest, closestDist = nil, math.huge
+        local MAX_DISTANCE = 200
+        for _, plr in ipairs(_Players:GetPlayers()) do
+            if plr == _LP then continue end
+            if plr:GetAttribute("TeamID") == _LP:GetAttribute("TeamID") then continue end
+            local char = plr.Character
+            if not char then continue end
+            local root = char:FindFirstChild("HumanoidRootPart")
+            local head = char:FindFirstChild("Head")
+            local hum = char:FindFirstChildWhichIsA("Humanoid")
+            if not (root and head and hum and hum.Health > 0) then continue end
+            local dist = (myRoot.Position - root.Position).Magnitude
+            if dist > MAX_DISTANCE then continue end
+            if dist < closestDist then closestDist = dist; closest = plr end
+        end
+        return closest
+    end
+    function Controller:__desync_start(target)
+        if self.__conn2 then self.__conn2:Disconnect() end
+        self.__desync = true
+        self.__curr = target
+        self.__conn2 = _RunService.Heartbeat:Connect(function()
+            if not self.__desync then return end
+            local root = CharHelper.__root
+            if not root then return end
+            local enemyHead = target.Character and target.Character:FindFirstChild("Head")
+            if not enemyHead then self:__desync_stop(); return end
+            local savedCF = root.CFrame
+            local savedVel = root.Velocity
+            local savedRot = root.RotVelocity
+            root.CFrame = enemyHead.CFrame
+            RunService:BindToRenderStep("__restore", 101, function()
+                root.CFrame = savedCF
+                root.Velocity = savedVel
+                root.RotVelocity = savedRot
+                RunService:UnbindFromRenderStep("__restore")
+            end)
+        end)
+    end
+    function Controller:__desync_stop()
+        self.__desync = false
+        self.__curr = nil
+        if self.__conn2 then self.__conn2:Disconnect(); self.__conn2 = nil end
+    end
+    function Controller:Shutdown()
+        self.__active = false
+        if self.__conn1 then self.__conn1:Disconnect() end
+        if self.__conn2 then self.__conn2:Disconnect() end
+        if self.__task1 then task.cancel(self.__task1) end
+        if self.__oldfunc then GunModule.StartShooting = self.__oldfunc end
+        for _, c in ipairs(killConns) do pcall(function() c:Disconnect() end) end
+        killConns = {}
+        tracked = {}
+        StopKillDesync()
+    end
+    Controller:__init()
+    print("[Anti-rival] User Desync Ragebot STARTED")
+end
+
+local function StopUserRagebot()
+    local g = getgenv()
+    if g and g.__s9t0u1 then pcall(function() g.__s9t0u1:Shutdown() end); g.__s9t0u1 = nil end
+    StopKillDesync()
+    print("[Anti-rival] User Desync Ragebot STOPPED")
+end
+
+env._riv_startRagebot = function(on)
+    if on then StartUserRagebot() else StopUserRagebot() end
+end
+
+-- ============ Device Spoof Module ============
+local _deviceMap = {
+    Computer = "MouseKeyboard",
+    Mobile = "Touch",
+    Console = "Gamepad",
+    VR = "VR",
+}
+
+local function ApplyDeviceSpoof(val)
+    if not val or val == "None" then
+        print("[DeviceSpoof] None selected — nothing sent")
+        return
+    end
+    local control = _deviceMap[val]
+    if not control then
+        warn("[DeviceSpoof] Unknown device:", val)
+        return
+    end
+    local ok, err = pcall(function()
+        local RS = game:GetService("ReplicatedStorage")
+        local remotes = RS:FindFirstChild("Remotes")
+            or RS:FindFirstChild("Remote")
+            or RS:FindFirstChild("Remotes_")
+        if not remotes then error("Remotes folder not found in ReplicatedStorage") end
+        local replication = remotes:FindFirstChild("Replication")
+        if not replication then error("Replication not found") end
+        local fighter = replication:FindFirstChild("Fighter")
+        if not fighter then error("Fighter not found") end
+        local setControls = fighter:FindFirstChild("SetControls")
+            or fighter:FindFirstChild("SetControl")
+        if not setControls then error("SetControls not found in Fighter") end
+        setControls:FireServer(control)
+    end)
+    if ok then
+        print("[DeviceSpoof] Applied:", val, "→", control)
+    else
+        warn("[DeviceSpoof] Failed:", err)
+    end
+end
+
+-- ============ Trigger Bot Module ============
+local _triggerLastShot = 0
+local function TriggerBotStep()
+    if not S.triggerBotOn or MenuOpen then return end
+    local now = os.clock()
+    if now - _triggerLastShot < 0.1 then return end
+    local target = getBestTarget(S.silentAimFOV)
+    if not target then return end
+    local cam = Workspace.CurrentCamera
+    if not cam then return end
+    local pos, vis = cam:WorldToViewportPoint(target.Position)
+    if not vis then return end
+    local mouse = UserInputService:GetMouseLocation()
+    local dx = pos.X - mouse.X
+    local dy = pos.Y - mouse.Y
+    local dist = math.sqrt(dx * dx + dy * dy)
+    if dist > 10 then return end
+    _triggerLastShot = now
+    pcall(mouse1click)
+end
+
+-- ============ Fast Shot (Rapid Fire) Module ============
+local function patchInfoTableFast(info)
+    if type(info) ~= "table" then return end
+    if not env._rivRapidFire then return end
+    rawset(info, "ShootCooldown", 0)
+    rawset(info, "QuickShotCooldown", 0)
+    rawset(info, "FireRate", 0)
+    rawset(info, "Delay", 0)
+    if rawget(info, "Cooldown") ~= nil and type(rawget(info, "Cooldown")) == "number" then
+        rawset(info, "Cooldown", 0)
+    end
+    if rawget(info, "Auto") ~= nil then rawset(info, "Auto", true) end
+    if rawget(info, "AutoFire") ~= nil then rawset(info, "AutoFire", true) end
+    if rawget(info, "Automatic") ~= nil then rawset(info, "Automatic", true) end
+end
+
+task.spawn(function()
+    local ok, modulesFolder = pcall(function() return game:GetService("ReplicatedStorage"):WaitForChild("Modules", 8) end)
+    if not ok then return end
+    local clientItemModule = modulesFolder:FindFirstChild("ClientItem")
+    if clientItemModule then
+        local ok, ClientItem = pcall(require, clientItemModule)
+        if ok and ClientItem then
+            local origInput = rawget(ClientItem, "Input") or ClientItem.Input
+            if type(origInput) == "function" then
+                rawset(ClientItem, "Input", function(self, ...)
+                    if self and type(self) == "table" and self.Info and env._rivRapidFire then
+                        pcall(patchInfoTableFast, self.Info)
+                    end
+                    return origInput(self, ...)
+                end)
+            end
+        end
+    end
+    local gunModule = modulesFolder:FindFirstChild("Gun") or modulesFolder:FindFirstChild("GunItem")
+    if gunModule then
+        local ok, Gun = pcall(require, gunModule)
+        if ok and Gun then
+            local origGetAim = rawget(Gun, "GetAimSpeed") or Gun.GetAimSpeed
+            if type(origGetAim) == "function" then
+                rawset(Gun, "GetAimSpeed", function(...)
+                    if env._rivRapidFire then return 999 end
+                    return origGetAim(...)
+                end)
+            end
+            local origStart = rawget(Gun, "StartShooting") or Gun.StartShooting
+            if type(origStart) == "function" then
+                rawset(Gun, "StartShooting", function(self, ...)
+                    if self and type(self) == "table" and self.Info and env._rivRapidFire then
+                        pcall(patchInfoTableFast, self.Info)
+                    end
+                    return origStart(self, ...)
+                end)
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while true do
+        if env._rivRapidFire then
+            pcall(function()
+                local char = LocalPlayer.Character
+                if char then
+                    for _, tool in ipairs(char:GetChildren()) do
+                        if tool:IsA("Tool") then
+                            for _, v in ipairs(tool:GetDescendants()) do
+                                if v:IsA("NumberValue") or v:IsA("IntValue") then
+                                    local n = string.lower(v.Name)
+                                    if string.find(n, "cooldown") or string.find(n, "fire") or string.find(n, "rate") or string.find(n, "delay") then
+                                        v.Value = 0
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+        task.wait(0.15)
+    end
+end)
+
+task.spawn(function()
+    while true do
+        if env._rivRapidFire and getgc then
+            pcall(function()
+                for _, obj in ipairs(getgc(true)) do
+                    if type(obj) == "table" then
+                        if rawget(obj, "FireRate") ~= nil or rawget(obj, "ShootCooldown") ~= nil then
+                            patchInfoTableFast(obj)
+                        end
+                    end
+                end
+            end)
+        end
+        task.wait(1.5)
+    end
+end)
+
+-- ============ No Spread (No Recoil) Module ============
+local function patchInfoTableNoRecoil(info)
+    if type(info) ~= "table" then return end
+    if not env._rivNoRecoil then return end
+    for _, k in ipairs({
+        "ShootRecoil", "ShootSpread", "Recoil", "Spread", "Bloom", "BloomMax", "BloomMin",
+        "RecoilMin", "RecoilMax", "VerticalRecoil", "HorizontalRecoil", "CameraRecoil",
+        "AimSpread", "HipSpread", "SpreadMultiplier", "RecoilMultiplier", "Kick",
+        "ViewKick", "Punch", "Inaccuracy"
+    }) do
+        local v = rawget(info, k)
+        if type(v) == "number" then rawset(info, k, 0) end
+    end
+    if rawget(info, "ProjectileSpeed") ~= nil then
+        rawset(info, "ProjectileSpeed", 99999999999)
+    end
+end
+
+task.spawn(function()
+    local ok, modulesFolder = pcall(function() return game:GetService("ReplicatedStorage"):WaitForChild("Modules", 8) end)
+    if not ok then return end
+    local clientItemModule = modulesFolder:FindFirstChild("ClientItem")
+    if clientItemModule then
+        local ok, ClientItem = pcall(require, clientItemModule)
+        if ok and ClientItem then
+            local origInput = rawget(ClientItem, "Input") or ClientItem.Input
+            if type(origInput) == "function" then
+                rawset(ClientItem, "Input", function(self, ...)
+                    if self and type(self) == "table" and self.Info and env._rivNoRecoil then
+                        pcall(patchInfoTableNoRecoil, self.Info)
+                    end
+                    return origInput(self, ...)
+                end)
+            end
+        end
+    end
+    local gunModule = modulesFolder:FindFirstChild("Gun") or modulesFolder:FindFirstChild("GunItem")
+    if gunModule then
+        local ok, Gun = pcall(require, gunModule)
+        if ok and Gun then
+            local origStart = rawget(Gun, "StartShooting") or Gun.StartShooting
+            if type(origStart) == "function" then
+                rawset(Gun, "StartShooting", function(self, ...)
+                    if self and type(self) == "table" and self.Info and env._rivNoRecoil then
+                        pcall(patchInfoTableNoRecoil, self.Info)
+                    end
+                    return origStart(self, ...)
+                end)
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while true do
+        if env._rivNoRecoil then
+            pcall(function()
+                local char = LocalPlayer.Character
+                if char then
+                    for _, tool in ipairs(char:GetChildren()) do
+                        if tool:IsA("Tool") then
+                            for _, v in ipairs(tool:GetDescendants()) do
+                                if v:IsA("NumberValue") or v:IsA("IntValue") then
+                                    local n = string.lower(v.Name)
+                                    if string.find(n, "spread") or string.find(n, "recoil") or string.find(n, "bloom") or string.find(n, "kick") then
+                                        v.Value = 0
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+        task.wait(0.15)
+    end
+end)
+
+task.spawn(function()
+    while true do
+        if env._rivNoRecoil and getgc then
+            pcall(function()
+                for _, obj in ipairs(getgc(true)) do
+                    if type(obj) == "table" then
+                        if rawget(obj, "Recoil") ~= nil or rawget(obj, "ShootSpread") ~= nil or rawget(obj, "Spread") ~= nil then
+                            patchInfoTableNoRecoil(obj)
+                        end
+                    end
+                end
+            end)
+        end
+        task.wait(1.5)
+    end
+end)
+
+local function StrengthToSmooth(s)
+    s = math.clamp(s, 1, 100)
+    return 1 + (100 - s) / 99 * 3
+end
+
+local function Notify(title, text)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", { Title = title, Text = text, Duration = 2 })
+    end)
+end
+
+-- ============ Drawing / ESP state ============
+local Holding = false
+local ESPObjects = {}
+local Connections = {}
+local FOVCircle, FOVOutline
+local GuiObjects = {}
+local FlyParts = {}
+local function DisconnectAll()
+    for _, o in ipairs(FlyParts) do pcall(function() o:Destroy() end) end
+    table.clear(FlyParts)
+    pcall(function()
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then hum.PlatformStand = false end
+    end)
+    pcall(function()
+        local char = LocalPlayer.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then hum.WalkSpeed = 16 end
+            for _, p in ipairs(char:GetDescendants()) do
+                if p:IsA("BasePart") and p.Name ~= "Head" then
+                    p.CanCollide = true
+                end
+            end
+        end
+    end)
+    for _, c in ipairs(Connections) do pcall(function() c:Disconnect() end) end
+    table.clear(Connections)
+    for _, objs in pairs(ESPObjects) do
+        for _, d in pairs(objs) do pcall(function() d:Remove() end) end
+    end
+    table.clear(ESPObjects)
+    pcall(function() FOVCircle:Remove() end)
+    pcall(function() FOVOutline:Remove() end)
+    for _, g in ipairs(GuiObjects) do pcall(function() g:Destroy() end) end
+    table.clear(GuiObjects)
+end
+getgenv().RivalsAimESP_Cleanup = function()
+    DisconnectAll()
+    getgenv().RivalsAimESP_Loaded = false
+end
+
+local function NewDraw(class, props)
+    local d = Drawing.new(class)
+    for k, v in pairs(props) do
+        local ok = pcall(function() d[k] = v end)
+        if not ok then pcall(setrenderproperty, d, k, v) end
+    end
+    return d
+end
+
+FOVOutline = NewDraw("Circle", { Thickness = 3, NumSides = 64, Radius = Config.Aimbot.FOV, Filled = false, Visible = true, ZIndex = 998, Transparency = 0.4, Color = Color3.fromRGB(0, 0, 0) })
+FOVCircle = NewDraw("Circle", { Thickness = 1.5, NumSides = 64, Radius = Config.Aimbot.FOV, Filled = false, Visible = true, ZIndex = 999, Transparency = 1, Color = Color3.fromRGB(255, 255, 255) })
+
+-- ============ Game helpers ============
+local function GetCharacter(player)
+    return player.Character
+end
+
+local function IsAlive(player, char, humanoid)
+    if not Config.Aimbot.AliveCheck then return true end
+    char = char or GetCharacter(player)
+    if not char then return false end
+    humanoid = humanoid or char:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return false end
+    return humanoid.Health > 0
+end
+
+local function IsTeammate(player)
+    if LocalPlayer.Team and player.Team and LocalPlayer.Team == player.Team then
+        return true
+    end
+    return false
+end
+
+local function HasWallBetween(origin, targetPos, ignoreList)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = ignoreList
+    params.IgnoreWater = true
+    return Workspace:Raycast(origin, targetPos - origin, params) ~= nil
+end
+
+local function GetTargetPart(char)
+    if Config.Aimbot.TargetPart == "Closest" then
+        local head = char:FindFirstChild("Head")
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if not head then return hrp end
+        if not hrp then return head end
+        local mouse = UserInputService:GetMouseLocation()
+        local hp, hov = Camera:WorldToViewportPoint(head.Position)
+        local rp, rov = Camera:WorldToViewportPoint(hrp.Position)
+        if not hov then return hrp end
+        if not rov then return head end
+        local hd = (Vector2.new(hp.X, hp.Y) - mouse).Magnitude
+        local rd = (Vector2.new(rp.X, rp.Y) - mouse).Magnitude
+        return (hd < rd) and head or hrp
+    end
+    return char:FindFirstChild(Config.Aimbot.TargetPart) or char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+end
+
+-- ============ 에임봇 제외 무기 (정규화 비교): 방패/카타나 든 적은 조준 제외
+local BLOCKED_WEAPONS = {
+    riotshield = true,
+    katana = true,
+}
+
+-- 하드코딩 fallback 무기명 목록 (ItemLib 로딩 실패 시 사용)
+local FALLBACK_WEAPONS = {
+    "AK-47", "M4A1", "M16A4", "AR-15", "MP5", "PP-19", "UZIs", "TMP",
+    "Thompson", "Colt 45", "Desert Eagle", "Sawed-Off", "Double Barrel",
+    "Winchester", "Mosin Nagant", "Barrett", "Sniper Rifle", "RPG",
+    "Riot Shield", "Katana", "Baseball Bat", "Knife", "Fists",
+    "Glock", "Revolver", "Shotgun", "Mini Gun", "Flame Thrower",
+    "Wrench", "Crowbar", "Golf Club", "Hammer", "Cleaver",
+    "Pan", "Dagger", "Sickle", "Pitchfork", "Nunchucks",
+    "Spear", "Mace", "War Axe", "Battle Axe", "Crossbow",
+    "Bows", "Compound Bow", "Slingshot", "Fire Extinguisher",
+    "Painting", "Television", "Microwave", "Laptop", "Book",
+    "Potion", "C4", "Mine", "Taser", "Stun Gun",
+}
+
+local function NormalizeKey(s)
+    return string.lower(tostring(s)):gsub("%s+", "")
+end
+
+local function GetKnownWeaponNames()
+    local list = {}
+    if ItemLib and type(ItemLib.Items) == "table" then
+        for k, _ in pairs(ItemLib.Items) do
+            if type(k) == "string" then table.insert(list, k) end
+        end
+    end
+    if #list == 0 then
+        for _, w in ipairs(FALLBACK_WEAPONS) do
+            table.insert(list, w)
+        end
+    end
+    return list
+end
+
+-- 뷰모델/핫바/툴에서 장착 무기명 반환 (플레이어별)
+local function GetPlayerWeaponName(plr)
+    local pname = plr.Name
+    local prefix = pname .. " - "
+    local vms = nil
+    pcall(function() vms = Workspace:FindFirstChild("ViewModels") end)
+    if vms then
+        local models = {}
+        for _, folder in ipairs(vms:GetChildren()) do
+            if folder:IsA("Model") then
+                table.insert(models, folder)
+            else
+                pcall(function()
+                    for _, m in ipairs(folder:GetChildren()) do
+                        if m:IsA("Model") then table.insert(models, m) end
+                    end
+                end)
+            end
+        end
+        for _, m in ipairs(models) do
+            if string.sub(m.Name, 1, #prefix) == prefix then
+                for _, w in ipairs(GetKnownWeaponNames()) do
+                    if string.find(m.Name, w, 1, true) then return w end
+                end
+                local rest = string.sub(m.Name, #prefix + 1)
+                local dash = string.find(rest, "%s%-%s")
+                local first = dash and string.sub(rest, 1, dash - 1) or rest
+                first = string.match(first, "^%s*(.-)%s*$")
+                if first ~= "" then return first end
+            end
+        end
+    end
+    if plr == LocalPlayer then
+        pcall(function()
+            local hotbar = LocalPlayer.PlayerGui.MainGui.MainFrame.FighterInterfaces[pname].BottomCenter.Container.Hotbar.Container
+            if not hotbar then return end
+            local counts, slots = {}, {}
+            for _, slot in ipairs(hotbar:GetChildren()) do
+                if slot:IsA("Frame") and slot.Name ~= "EquippedDisplay" and not string.find(slot.Name, "Keybind") then
+                    local bg = slot:FindFirstChild("Background")
+                    local img = (bg and bg:IsA("ImageLabel")) and bg.Image or ""
+                    counts[img] = (counts[img] or 0) + 1
+                    table.insert(slots, { name = slot.Name, img = img })
+                end
+            end
+            for _, s in ipairs(slots) do
+                if counts[s.img] == 1 then return s.name end
+            end
+        end)
+    end
+    local char = plr.Character
+    if char then
+        local tool = char:FindFirstChildWhichIsA("Tool")
+        if tool then return tool.Name end
+    end
+    return nil
+end
+
+local HasBlockedWeapon = function(plr)
+    local w = GetPlayerWeaponName(plr)
+    return w ~= nil and BLOCKED_WEAPONS[NormalizeKey(w)] == true
+end
+
+-- ============ 에임봇 타겟 (방패/카타나 필터)
+local function GetClosestTarget()
+    if not Config.Aimbot.Enabled then return nil end
+    local mouse = UserInputService:GetMouseLocation()
+    local best, bestDist = nil, Config.Aimbot.FOV
+    local myChar = LocalPlayer.Character
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr == LocalPlayer then continue end
+        if Config.Aimbot.TeamCheck and IsTeammate(plr) then continue end
+        local char = GetCharacter(plr)
+        if not char then continue end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not IsAlive(plr, char, hum) then continue end
+        if HasBlockedWeapon(plr) then continue end
+        local part = GetTargetPart(char)
+        if not part then continue end
+        if (Camera.CFrame.Position - part.Position).Magnitude > Config.Aimbot.MaxDistance then continue end
+        local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
+        if not onScreen then continue end
+        local dist2d = (Vector2.new(sp.X, sp.Y) - mouse).Magnitude
+        if dist2d > bestDist then continue end
+        if Config.Aimbot.WallCheck and myChar then
+            if HasWallBetween(Camera.CFrame.Position, part.Position, { myChar, char, Camera }) then continue end
+        end
+        best, bestDist = part, dist2d
+    end
+    return best
+end
+
+-- ============ ESP ============
+local function GetESP(player)
+    local o = ESPObjects[player]
+    if o then return o end
+    o = {
+        boxOutline = NewDraw("Square", { Thickness = 3, Filled = false, Visible = false, ZIndex = 1, Transparency = 0.4, Color = Color3.fromRGB(0, 0, 0) }),
+        box = NewDraw("Square", { Thickness = 1.5, Filled = false, Visible = false, ZIndex = 2, Transparency = 1 }),
+        hpBack = NewDraw("Square", { Thickness = 1, Filled = true, Visible = false, ZIndex = 2, Transparency = 0.6, Color = Color3.fromRGB(0, 0, 0) }),
+        hpFront = NewDraw("Square", { Thickness = 1, Filled = true, Visible = false, ZIndex = 3, Transparency = 1, Color = Color3.fromRGB(0, 255, 0) }),
+        name = NewDraw("Text", { Size = 13, Center = true, Outline = true, Visible = false, ZIndex = 3, Transparency = 1, Color = Color3.fromRGB(255, 255, 255) }),
+        dist = NewDraw("Text", { Size = 12, Center = true, Outline = true, Visible = false, ZIndex = 3, Transparency = 1, Color = Color3.fromRGB(200, 200, 200) }),
+        line = NewDraw("Line", { Thickness = 1, Visible = false, ZIndex = 1, Transparency = 0.7, Color = Color3.fromRGB(255, 255, 255) }),
+    }
+    ESPObjects[player] = o
+    return o
+end
+
+local function HideESP(o)
+    for _, d in pairs(o) do d.Visible = false end
+end
+
+local function UpdateESPPlayer(player, viewportSize)
+    local o = GetESP(player)
+    if not Config.ESP.Enabled or player == LocalPlayer then HideESP(o) return end
+    if Config.ESP.TeamCheck and IsTeammate(player) then HideESP(o) return end
+    local char = GetCharacter(player)
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local head = char and char:FindFirstChild("Head")
+    if not char or not hum or hum.Health <= 0 or not hrp or not head then HideESP(o) return end
+    local dist3d = (Camera.CFrame.Position - hrp.Position).Magnitude
+    if dist3d > Config.ESP.MaxDistance then HideESP(o) return end
+
+    local top3d = head.Position + Vector3.new(0, 0.6, 0)
+    local bot3d = hrp.Position - Vector3.new(0, 3, 0)
+    local top, topVis = Camera:WorldToViewportPoint(top3d)
+    local bot, botVis = Camera:WorldToViewportPoint(bot3d)
+    if not topVis and not botVis then HideESP(o) return end
+
+    local h = math.abs(bot.Y - top.Y)
+    local w = h * 0.6
+    local x = bot.X - w / 2
+    local y = top.Y
+
+    local teammate = IsTeammate(player)
+    local baseColor = teammate and Config.ESP.TeamColor or Config.ESP.BoxColor
+    local obscured = false
+    if LocalPlayer.Character then
+        obscured = HasWallBetween(Camera.CFrame.Position, hrp.Position, { LocalPlayer.Character, char, Camera })
+    end
+    local color = obscured and Config.ESP.HiddenColor or baseColor
+
+    if Config.ESP.Boxes then
+        o.box.Visible = true; o.boxOutline.Visible = true
+        o.box.Size = Vector2.new(w, h); o.box.Position = Vector2.new(x, y); o.box.Color = color
+        o.boxOutline.Size = Vector2.new(w, h); o.boxOutline.Position = Vector2.new(x, y)
+    else o.box.Visible = false; o.boxOutline.Visible = false end
+
+    if Config.ESP.HealthBar then
+        local frac = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+        local bw = 4
+        o.hpBack.Visible = true
+        o.hpBack.Size = Vector2.new(bw, h); o.hpBack.Position = Vector2.new(x - bw - 2, y)
+        o.hpFront.Visible = true
+        o.hpFront.Size = Vector2.new(bw - 2, h * frac)
+        o.hpFront.Position = Vector2.new(x - bw - 1, y + h * (1 - frac))
+        o.hpFront.Color = Color3.fromHSV(frac * 0.33, 1, 1)
+    else o.hpBack.Visible = false; o.hpFront.Visible = false end
+
+    if Config.ESP.Names then
+        o.name.Visible = true
+        o.name.Text = (player.DisplayName ~= player.Name) and (player.DisplayName .. " (@" .. player.Name .. ")") or player.Name
+        o.name.Position = Vector2.new(bot.X, y - 16)
+        o.name.Color = color
+    else o.name.Visible = false end
+
+    if Config.ESP.Distance then
+        o.dist.Visible = true
+        o.dist.Text = string.format("%dm", math.floor(dist3d))
+        o.dist.Position = Vector2.new(bot.X, bot.Y + 2)
+    else o.dist.Visible = false end
+
+    if Config.ESP.Snaplines then
+        o.line.Visible = true
+        o.line.From = Vector2.new(viewportSize.X / 2, viewportSize.Y)
+        o.line.To = Vector2.new(bot.X, bot.Y)
+        o.line.Color = color
+    else o.line.Visible = false end
+end
+
+-- ============ Fly ============
+local FlyGyro, FlyVel = nil, nil
+
+local function ClearFlyObjects()
+    for _, o in ipairs(FlyParts) do pcall(function() o:Destroy() end) end
+    table.clear(FlyParts)
+    FlyGyro, FlyVel = nil, nil
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then pcall(function() hum.PlatformStand = false end) end
+end
+
+local function SetFly(on)
+    Config.Fly.Enabled = on
+    if not on then
+        ClearFlyObjects()
+        return
+    end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum or hum.Health <= 0 then
+        Notify("플라이", "캐릭터가 있어야 켤 수 있어")
+        Config.Fly.Enabled = false
+        return
+    end
+    ClearFlyObjects()
+    FlyGyro = Instance.new("BodyGyro")
+    FlyGyro.P = 9e4
+    FlyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+    FlyGyro.CFrame = Camera.CFrame
+    FlyGyro.Parent = hrp
+    FlyVel = Instance.new("BodyVelocity")
+    FlyVel.Velocity = Vector3.zero
+    FlyVel.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+    FlyVel.Parent = hrp
+    table.insert(FlyParts, FlyGyro)
+    table.insert(FlyParts, FlyVel)
+    pcall(function() hum.PlatformStand = true end)
+end
+
+local function FlyStep()
+    if not Config.Fly.Enabled then return end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum or hum.Health <= 0 then return end
+    if not FlyGyro or not FlyVel or FlyGyro.Parent ~= hrp then
+        SetFly(true)
+        if not FlyVel then return end
+    end
+    pcall(function() hum.PlatformStand = true end)
+    local camCF = Camera.CFrame
+    local move = Vector3.zero
+    if UserInputService:IsKeyDown(Enum.KeyCode.W) then move += camCF.LookVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.S) then move -= camCF.LookVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.D) then move += camCF.RightVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.A) then move -= camCF.RightVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move += Vector3.yAxis end
+    if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.C) then move -= Vector3.yAxis end
+    if move.Magnitude > 0 then
+        FlyVel.Velocity = move.Unit * Config.Fly.Speed
+    else
+        FlyVel.Velocity = Vector3.zero
+    end
+    FlyGyro.CFrame = camCF
+end
+
+-- ============ 걷기 속도 ============
+local DEFAULT_WALK = 16
+
+local function ApplyWalk()
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function()
+            hum.WalkSpeed = Config.Walk.Enabled and Config.Walk.Speed or DEFAULT_WALK
+        end)
+    end
+end
+
+local function SetWalk(on)
+    Config.Walk.Enabled = on
+    ApplyWalk()
+end
+
+local function WalkStep(dt)
+    if not Config.Walk.Enabled then return end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum or hum.Health <= 0 then return end
+    pcall(function() hum.WalkSpeed = math.max(Config.Walk.Speed, DEFAULT_WALK) end)
+    local md = hum.MoveDirection
+    if md.Magnitude > 0.01 and Config.Walk.Speed > DEFAULT_WALK then
+        dt = (typeof(dt) == "number" and dt > 0 and dt < 0.2) and dt or (1 / 60)
+        pcall(function()
+            hrp.CFrame = hrp.CFrame + md.Unit * (Config.Walk.Speed - DEFAULT_WALK) * dt
+        end)
+    end
+end
+
+-- ============ 노클립 ============
+local function SetNoclipCollide(collide)
+    local char = LocalPlayer.Character
+    if not char then return end
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then
+            pcall(function()
+                if collide then
+                    p.CanCollide = (p.Name ~= "Head")
+                else
+                    p.CanCollide = false
+                end
+            end)
+        end
+    end
+end
+
+local function NoclipStep()
+    if not Config.Noclip.Enabled then return end
+    SetNoclipCollide(false)
+end
+
+-- ============ GUI (RightShift 토글) ============"
+local function GetGuiParent()
+    local ok, hui = pcall(function() return gethui() end)
+    if ok and typeof(hui) == "Instance" then return hui end
+    local ok2, c = pcall(function() return CoreGui end)
+    if ok2 and c then
+        local ok3 = pcall(function() c:GetChildren() end)
+        if ok3 then return c end
+    end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "RivalsGUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.DisplayOrder = 999
+table.insert(GuiObjects, ScreenGui)
+
+local Main = Instance.new("Frame")
+Main.Name = "Main"
+Main.Size = UDim2.new(0, 430, 0, 520)
+Main.Position = UDim2.new(0.5, -215, 0.5, -260)
+Main.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+Main.BorderSizePixel = 0
+Main.Active = true
+Main.Draggable = true
+Main.Parent = ScreenGui
+
+local Corner = Instance.new("UICorner")
+Corner.CornerRadius = UDim.new(0, 8)
+Corner.Parent = Main
+
+local Stroke = Instance.new("UIStroke")
+Stroke.Color = Color3.fromRGB(60, 60, 70)
+Stroke.Thickness = 1
+Stroke.Parent = Main
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, 0, 0, 30)
+Title.BackgroundTransparency = 1
+Title.Text = "RIVALS HUB " .. HUB_VERSION
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 16
+Title.Parent = Main
+
+local TabBar = Instance.new("Frame")
+TabBar.Name = "TabBar"
+TabBar.Size = UDim2.new(1, -24, 0, 28)
+TabBar.Position = UDim2.new(0, 12, 0, 32)
+TabBar.BackgroundTransparency = 1
+TabBar.Parent = Main
+
+local MainTab = Instance.new("TextButton")
+MainTab.Size = UDim2.new(0.5, -3, 1, 0)
+MainTab.Position = UDim2.new(0, 0, 0, 0)
+MainTab.Text = "메인"
+MainTab.Font = Enum.Font.GothamBold
+MainTab.TextSize = 13
+MainTab.TextColor3 = Color3.fromRGB(255, 255, 255)
+MainTab.BackgroundColor3 = Color3.fromRGB(70, 130, 255)
+MainTab.Parent = TabBar
+local mtc = Instance.new("UICorner") mtc.CornerRadius = UDim.new(0, 6) mtc.Parent = MainTab
+
+local UpdateTab = Instance.new("TextButton")
+UpdateTab.Size = UDim2.new(0.333, -2, 1, 0)
+UpdateTab.Position = UDim2.new(0.666, 2, 0, 0)
+UpdateTab.Text = "업데이트"
+UpdateTab.Font = Enum.Font.GothamBold
+UpdateTab.TextSize = 13
+UpdateTab.TextColor3 = Color3.fromRGB(255, 255, 255)
+UpdateTab.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+UpdateTab.Parent = TabBar
+local utc = Instance.new("UICorner") utc.CornerRadius = UDim.new(0, 6) utc.Parent = UpdateTab
+
+local ConfigTab = Instance.new("TextButton")
+ConfigTab.Size = UDim2.new(0.333, -2, 1, 0)
+ConfigTab.Position = UDim2.new(0.333, 2, 0, 0)
+ConfigTab.Text = "구성"
+ConfigTab.Font = Enum.Font.GothamBold
+ConfigTab.TextSize = 13
+ConfigTab.TextColor3 = Color3.fromRGB(255, 255, 255)
+ConfigTab.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+ConfigTab.Parent = TabBar
+local ctc = Instance.new("UICorner") ctc.CornerRadius = UDim.new(0, 6) ctc.Parent = ConfigTab
+
+local Scroll = Instance.new("ScrollingFrame")
+Scroll.Name = "Scroll"
+Scroll.Position = UDim2.new(0, 0, 0, 64)
+Scroll.Size = UDim2.new(1, 0, 1, -64)
+Scroll.BackgroundTransparency = 1
+Scroll.BorderSizePixel = 0
+Scroll.ScrollBarThickness = 4
+Scroll.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 90)
+Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+Scroll.ScrollingDirection = Enum.ScrollingDirection.Y
+Scroll.Parent = Main
+
+local UpdateScroll = Instance.new("ScrollingFrame")
+UpdateScroll.Name = "UpdateScroll"
+UpdateScroll.Position = UDim2.new(0, 0, 0, 64)
+UpdateScroll.Size = UDim2.new(1, 0, 1, -64)
+UpdateScroll.BackgroundTransparency = 1
+UpdateScroll.BorderSizePixel = 0
+UpdateScroll.ScrollBarThickness = 4
+UpdateScroll.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 90)
+UpdateScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+UpdateScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+UpdateScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+UpdateScroll.Visible = false
+UpdateScroll.Parent = Main
+
+local ConfigScroll = Instance.new("ScrollingFrame")
+ConfigScroll.Name = "ConfigScroll"
+ConfigScroll.Position = UDim2.new(0, 0, 0, 64)
+ConfigScroll.Size = UDim2.new(1, 0, 1, -64)
+ConfigScroll.BackgroundTransparency = 1
+ConfigScroll.BorderSizePixel = 0
+ConfigScroll.ScrollBarThickness = 4
+ConfigScroll.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 90)
+ConfigScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+ConfigScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+ConfigScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+ConfigScroll.Visible = false
+ConfigScroll.Parent = Main
+
+local UpdateLayout = Instance.new("UIListLayout")
+UpdateLayout.Padding = UDim.new(0, 6)
+UpdateLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UpdateLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+UpdateLayout.Parent = UpdateScroll
+local UpdatePad = Instance.new("UIPadding")
+UpdatePad.PaddingTop = UDim.new(0, 4)
+UpdatePad.PaddingLeft = UDim.new(0, 12)
+UpdatePad.PaddingRight = UDim.new(0, 12)
+UpdatePad.PaddingBottom = UDim.new(0, 12)
+UpdatePad.Parent = UpdateScroll
+
+local CHANGELOG = {
+    { v = "V0.0.3.0", text = "구성 JSON 저장 — HttpService:JSONEncode/Decode로 .json 파일 저장/불러오기. 파일 경로: .../RivalsHub/configs/. makefolder로 폴더 생성, pcall로 에러 처리." },
+    { v = "V0.0.2.9", text = "구성(콘픽) 탭 추가 — 구성 저장/불러오기/보기 버튼 구현. 구성 데이터는 getgenv().RivalsSavedConfigs에 저장. 메인, 업데이트, 구성 3탭 지원." },
+    { v = "V0.0.2.8", text = "메뉴 열면 레이지봇/트리거봇 자동 OFF (이전 상태 저장). 메뉴 닫으면 이전 상태 자동 복귀. SetMenu(true) 시 저장 후 초기화, SetMenu(false) 시 복원." },
+    { v = "V0.0.2.7", text = "레이지봇 자동 발사 제거 — RagebotStep에서 mouse1click() 제거. 레이지 봇 키 ON 시 조준만 작동 (자동 연사 중지). Trigger Bot은 별도 Toggle로 유지." },
+    { v = "V0.0.2.6", text = "에임봇 발사 속도 제한 — RagebotStep에 0.05초 쿨다운 추가 (연속 mouse1click 스팸 방지). 레이지 봇 OFF 시 즉시 발사 중지." },
+    { v = "V0.0.2.5", text = "에러 수정 — pcall 결과 처리 버그 수정 (modulesFolder = true 문제). ItemLib WaitForChild 호출 시 ok, result로 분리하여 IndexError 방지." },
+    { v = "V0.0.2.4", text = "장치 스푸프 수정 — ApplyDeviceSpoof를 GUI 버튼에 직접 통합하여 상태 표시 추가 (장치: 적용됨/실패). SetControls 경로 찾기 강화 (Remotes/Remote 이중 검색). 버전 0.0.2.3 에임봇 발사 + Trigger Bot 유지." },
+    { v = "V0.0.2.3", text = "에임봇 발사 수정 — RagebotStep을 Heartbeat에 복원하여 레이지 봇 키 시 실제로 발사되도록 변경. Trigger Bot 추가 (적 조준 시 자동 발사, Toggle로 ON/OFF). 장치 스푸프는 메인 GUI 버튼 유지." },
+    { v = "V0.0.2.2", text = "장치 스푸프를 메인 GUI에 추가 (Computer/Mobile/Console/VR 버튼 + Apply Spoof). Remotes.Replication.Fighter.SetControls:FireServer 방식으로 교체. 패스트샷 GUI 토글 제거 (Fast Shot 모듈은 자동 작동). V0.0.2.1 RageBot/Fast Shot/NoSpread 모듈 유지." },
+    { v = "V0.0.2.1", text = "Rage Bot 전체 모듈 추가 (데스싱크 + GunModule 후킹). Fast Shot (연사 쿨다운 0) 및 No Spread (후발산/리코일 0) 모듈 추가. GUI 버튼으로 전환 (R/Y/T 키 제거). 장치 스푸프 IsA 후킹 수정." },
+    { v = "V0.0.1.2", text = "무기 감지 fallback(55종 하드코딩) 추가로 패스트샷/연사 정확도 향상. 장치 스푸프 IsA 후킹 수정. HasBlockedWeapon 중복 제거. 시작 시 장착 무기 표시." },
+    { v = "V0.0.1.1", text = "창 열면 에임봇 일시정지. 연사 상태 실시간 표시. 방패/카타나 든 적 조준 제외. 장치 스푸프(컴퓨터/폰/콘솔/VR) 추가." },
+    { v = "V0.0.1.0", text = "패스트샷 감지 강화(뷰모델 전체 탐색 + 무기명 대조). 언로드 버튼, 무한 점프 추가. 언로드 시 속도/충돌 복구." },
+    { v = "V0.0.0.9", text = "패스트샷 수정: 장착 무기 감지(뷰모델/핫바)로 반자동에만 연사, 풀오토 홀드 끊김 해결. 켤 때 감지 결과 알림." },
+    { v = "V0.0.0.8", text = "창 확대 + 2열 버튼 정리, 스냅라인 토글 추가. 패스트샷(연사) 추가: 좌클릭 홀드 시 반자동 무기 최대 연사." },
+    { v = "V0.0.0.7", text = "에임봇 강도 100 = 즉시 스냅, 전체 구간 상향(반올림 이동으로 손실 제거)." },
+    { v = "V0.0.0.6", text = "노클립 ON/OFF 추가. 켜면 벽 통과, 끄면 충돌 복구." },
+    { v = "V0.0.0.5", text = "걷기 속도 Rivals 대응 수정: WalkSpeed 강제 + CFrame 부스트 이중 적용." },
+    { v = "V0.0.0.4", text = "걷기 속도 ON/OFF + 1~500 조절 추가. 첫 실행 시 전부 OFF. 에임봇 상시 작동(우클릭 홀드 불필요), 벽 뒤 타겟 제외 유지." },
+    { v = "V0.0.0.3", text = "플라이 ON/OFF + 속도 1~500 조절 추가. WASD 이동, Space 상승, C/Ctrl 하강." },
+    { v = "V0.0.0.2", text = "버전 체계 정리. 업데이트 탭에 전 버전 내역 추가, 타이틀 버전 표기 변경." },
+    { v = "V0.0.0.1", text = "RIVALS HUB 시작. 에임봇 강도 상향, 부위 선택(머리/몸/머리+몸), 상단 탭 + 업데이트 내역 추가." },
+    { v = "V0.0.0.0.3", text = "1인칭에서도 창 강제 표시, 스크롤 창으로 버튼 넘침 수정." },
+    { v = "V0.0.0.0.2", text = "GUI 추가: 에임봇 ON/OFF, 강도 1~100 슬라이더, ESP ON/OFF + 박스/체력바/이름/거리 개별 토글." },
+    { v = "V0.0.0.0.1", text = "우클릭 홀드 에임(mousemoverel) + ESP(박스/체력/이름/거리) 첫 버전." },
+}
+for _, entry in ipairs(CHANGELOG) do
+    local box = Instance.new("Frame")
+    box.Size = UDim2.new(1, -4, 0, 0)
+    box.AutomaticSize = Enum.AutomaticSize.Y
+    box.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
+    box.BorderSizePixel = 0
+    box.Parent = UpdateScroll
+    local bc = Instance.new("UICorner") bc.CornerRadius = UDim.new(0, 6) bc.Parent = box
+    local bp = Instance.new("UIPadding")
+    bp.PaddingTop = UDim.new(0, 8)
+    bp.PaddingBottom = UDim.new(0, 8)
+    bp.PaddingLeft = UDim.new(0, 10)
+    bp.PaddingRight = UDim.new(0, 10)
+    bp.Parent = box
+    local bl = Instance.new("UIListLayout")
+    bl.Padding = UDim.new(0, 2)
+    bl.SortOrder = Enum.SortOrder.LayoutOrder
+    bl.Parent = box
+    local vt = Instance.new("TextLabel")
+    vt.Size = UDim2.new(1, 0, 0, 18)
+    vt.BackgroundTransparency = 1
+    vt.Text = entry.v
+    vt.TextColor3 = Color3.fromRGB(120, 180, 255)
+    vt.Font = Enum.Font.GothamBold
+    vt.TextSize = 13
+    vt.TextXAlignment = Enum.TextXAlignment.Left
+    vt.Parent = box
+    local dt = Instance.new("TextLabel")
+    dt.Size = UDim2.new(1, 0, 0, 0)
+    dt.AutomaticSize = Enum.AutomaticSize.Y
+    dt.BackgroundTransparency = 1
+    dt.Text = entry.text
+    dt.TextColor3 = Color3.fromRGB(220, 220, 220)
+    dt.Font = Enum.Font.GothamMedium
+    dt.TextSize = 12
+    dt.TextWrapped = true
+    dt.TextXAlignment = Enum.TextXAlignment.Left
+    dt.TextYAlignment = Enum.TextYAlignment.Top
+    dt.Parent = box
+end
+
+MainTab.MouseButton1Click:Connect(function()
+    Scroll.Visible = true
+    UpdateScroll.Visible = false
+    ConfigScroll.Visible = false
+    MainTab.BackgroundColor3 = Color3.fromRGB(70, 130, 255)
+    UpdateTab.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+    ConfigTab.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+end)
+UpdateTab.MouseButton1Click:Connect(function()
+    Scroll.Visible = false
+    UpdateScroll.Visible = true
+    ConfigScroll.Visible = false
+    UpdateTab.BackgroundColor3 = Color3.fromRGB(70, 130, 255)
+    MainTab.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+    ConfigTab.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+end)
+ConfigTab.MouseButton1Click:Connect(function()
+    Scroll.Visible = false
+    UpdateScroll.Visible = false
+    ConfigScroll.Visible = true
+    ConfigTab.BackgroundColor3 = Color3.fromRGB(70, 130, 255)
+    MainTab.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+    UpdateTab.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+end)
+
+local Layout = Instance.new("UIListLayout")
+Layout.Padding = UDim.new(0, 6)
+Layout.SortOrder = Enum.SortOrder.LayoutOrder
+Layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+Layout.Parent = Scroll
+local Pad = Instance.new("UIPadding")
+Pad.PaddingTop = UDim.new(0, 4)
+Pad.PaddingLeft = UDim.new(0, 12)
+Pad.PaddingRight = UDim.new(0, 12)
+Pad.PaddingBottom = UDim.new(0, 12)
+Pad.Parent = Scroll
+
+local ConfigLayout = Instance.new("UIListLayout")
+ConfigLayout.Padding = UDim.new(0, 6)
+ConfigLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ConfigLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+ConfigLayout.Parent = ConfigScroll
+local ConfigPad = Instance.new("UIPadding")
+ConfigPad.PaddingTop = UDim.new(0, 4)
+ConfigPad.PaddingLeft = UDim.new(0, 12)
+ConfigPad.PaddingRight = UDim.new(0, 12)
+ConfigPad.PaddingBottom = UDim.new(0, 12)
+ConfigPad.Parent = ConfigScroll
+
+local function MakeBtn(parent, size, text, initial, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = size
+    btn.BackgroundColor3 = initial and Color3.fromRGB(30, 140, 70) or Color3.fromRGB(140, 35, 35)
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 13
+    btn.AutoButtonColor = true
+    btn.TextTruncate = Enum.TextTruncate.AtEnd
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = btn
+    local state = initial
+    local function refresh()
+        btn.Text = text .. " : " .. (state and "ON" or "OFF")
+        btn.BackgroundColor3 = state and Color3.fromRGB(30, 140, 70) or Color3.fromRGB(140, 35, 35)
+    end
+    refresh()
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        refresh()
+        callback(state)
+    end)
+    btn.Parent = parent
+    return btn, function() return state end, function(v) state = v; refresh() end
+end
+
+local function MakeToggle(text, initial, callback)
+    return MakeBtn(Scroll, UDim2.new(1, -4, 0, 32), text, initial, callback)
+end
+
+local function MakeTogglePair(t1, i1, cb1, t2, i2, cb2)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, -4, 0, 32)
+    row.BackgroundTransparency = 1
+    row.Parent = Scroll
+    local b1 = MakeBtn(row, UDim2.new(0.5, -3, 1, 0), t1, i1, cb1)
+    b1.Position = UDim2.new(0, 0, 0, 0)
+    local b2 = MakeBtn(row, UDim2.new(0.5, -3, 1, 0), t2, i2, cb2)
+    b2.Position = UDim2.new(0.5, 3, 0, 0)
+end
+
+-- ============ 구성(CONF) 탭 함수 ============
+local function MakeConfigLabel(text)
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(1, -4, 0, 20)
+    l.BackgroundTransparency = 1
+    l.Text = text
+    l.TextColor3 = Color3.fromRGB(200, 200, 200)
+    l.Font = Enum.Font.GothamMedium
+    l.TextSize = 12
+    l.Parent = ConfigScroll
+    return l
+end
+
+local function MakeConfigBtn(text, color, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -4, 0, 32)
+    btn.Text = text
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 13
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.BackgroundColor3 = color or Color3.fromRGB(40, 40, 55)
+    btn.Parent = ConfigScroll
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = btn
+    btn.MouseButton1Click:Connect(callback)
+    return btn
+end
+
+local HttpService = pcall(function() return game:GetService("HttpService") end) and game:GetService("HttpService") or nil
+local _ConfigDir = "C:\\Users\\mirun\\AppData\\Local\\Temp\\opencode\\uploads\\66940c5f-1c05-4ccc-894b-407e2c0490e9\\RivalsHub\\configs"
+pcall(function() makefolder(_ConfigDir) end)
+
+MakeConfigLabel("-- 구성 관리 --")
+MakeConfigBtn("구성 저장", Color3.fromRGB(30, 140, 70), function()
+    local snapshot = {
+        Config = {},
+        S = {},
+        name = "구성_" .. os.date("%Y%m%d_%H%M%S"),
+        time = os.date("%Y-%m-%d %H:%M:%S"),
+    }
+    for k, v in pairs(Config) do
+        if type(v) == "table" then
+            snapshot.Config[k] = {}
+            for k2, v2 in pairs(v) do
+                snapshot.Config[k][k2] = v2
+            end
+        else
+            snapshot.Config[k] = v
+        end
+    end
+    for k, v in pairs(S) do
+        snapshot.S[k] = v
+    end
+    local jsonStr = ""
+    local ok1, err1 = pcall(function() jsonStr = HttpService:JSONEncode(snapshot) end)
+    if not ok1 then
+        Notify("구성 저장", "JSON 직렬화 실패: " .. tostring(err1))
+        return
+    end
+    local ok2, err2 = pcall(function() writefile(_ConfigDir .. "\\" .. snapshot.name .. ".json", jsonStr) end)
+    if ok2 then
+        Notify("구성 저장", snapshot.name .. ".json 저장됨")
+    else
+        Notify("구성 저장", "저장 실패: " .. tostring(err2))
+    end
+end)
+
+MakeConfigBtn("구성 불러오기", Color3.fromRGB(70, 130, 255), function()
+    local files = getfiles(_ConfigDir)
+    if not files or #files == 0 then
+        Notify("구성 불러오기", "저장된 구성이 없습니다")
+        return
+    end
+    local latestFile = files[#files]
+    local data = readfile(latestFile)
+    if not data then
+        Notify("구성 불러오기", "파일을 읽을 수 없습니다")
+        return
+    end
+    local snapshot = nil
+    local ok, err = pcall(function() snapshot = HttpService:JSONDecode(data) end)
+    if not ok or not snapshot then
+        Notify("구성 불러오기", "JSON 파싱 실패: " .. tostring(err))
+        return
+    end
+    if snapshot.Config then for k, v in pairs(snapshot.Config) do Config[k] = v end end
+    if snapshot.S then for k, v in pairs(snapshot.S) do S[k] = v end end
+    Notify("구성 불러오기", string.match(latestFile, "([^\\]+)$") .. " 불러옴")
+end)
+
+MakeConfigBtn("저장된 구성 보기", Color3.fromRGB(130, 80, 200), function()
+    local files = getfiles(_ConfigDir)
+    if not files then files = {} end
+    Notify("구성 보기", "총 " .. #files .. "개 저장됨")
+    for _, f in ipairs(files) do
+        print("[Config]", string.match(f, "([^\\]+)$"))
+    end
+end)
+
+local function MakeLabel(text)
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(1, -4, 0, 20)
+    l.BackgroundTransparency = 1
+    l.Text = text
+    l.TextColor3 = Color3.fromRGB(200, 200, 200)
+    l.Font = Enum.Font.GothamMedium
+    l.TextSize = 12
+    l.Parent = Scroll
+    return l
+end
+
+-- 에임봇 섹션
+local UnloadBtn = Instance.new("TextButton")
+UnloadBtn.Size = UDim2.new(1, -4, 0, 30)
+UnloadBtn.BackgroundColor3 = Color3.fromRGB(120, 25, 25)
+UnloadBtn.Text = "스크립트 언로드"
+UnloadBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+UnloadBtn.Font = Enum.Font.GothamBold
+UnloadBtn.TextSize = 13
+UnloadBtn.Parent = Scroll
+local ulc = Instance.new("UICorner") ulc.CornerRadius = UDim.new(0, 6) ulc.Parent = UnloadBtn
+UnloadBtn.MouseButton1Click:Connect(function()
+    Notify("RIVALS HUB", "언로드됨")
+    pcall(clearqueueonteleport)
+    task.wait(0.2)
+    pcall(function() getgenv().RivalsAimESP_Cleanup() end)
+end)
+
+MakeLabel("-- Aimbot --")
+local AimToggle = MakeToggle("에임봇", Config.Aimbot.Enabled, function(v)
+    Config.Aimbot.Enabled = v
+end)
+
+local StrengthLabel = MakeLabel("에임봇 강도 : " .. tostring(Config.Aimbot.Strength))
+local SliderBack = Instance.new("Frame")
+SliderBack.Size = UDim2.new(1, -4, 0, 26)
+SliderBack.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+SliderBack.BorderSizePixel = 0
+SliderBack.Parent = Scroll
+local sc = Instance.new("UICorner") sc.CornerRadius = UDim.new(0, 6) sc.Parent = SliderBack
+local SliderFill = Instance.new("Frame")
+SliderFill.Size = UDim2.new(Config.Aimbot.Strength / 100, 0, 1, 0)
+SliderFill.BackgroundColor3 = Color3.fromRGB(70, 130, 255)
+SliderFill.BorderSizePixel = 0
+SliderFill.Parent = SliderBack
+local fc = Instance.new("UICorner") fc.CornerRadius = UDim.new(0, 6) fc.Parent = SliderFill
+
+local SliderRow = Instance.new("Frame")
+SliderRow.Size = UDim2.new(1, -4, 0, 28)
+SliderRow.BackgroundTransparency = 1
+SliderRow.Parent = Scroll
+local Minus = Instance.new("TextButton")
+Minus.Size = UDim2.new(0, 60, 1, 0)
+Minus.Text = "-"
+Minus.Font = Enum.Font.GothamBold
+Minus.TextSize = 16
+Minus.TextColor3 = Color3.fromRGB(255, 255, 255)
+Minus.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+Minus.Parent = SliderRow
+local mc = Instance.new("UICorner") mc.CornerRadius = UDim.new(0, 6) mc.Parent = Minus
+local Plus = Instance.new("TextButton")
+Plus.Size = UDim2.new(0, 60, 1, 0)
+Plus.Position = UDim2.new(1, -60, 0, 0)
+Plus.Text = "+"
+Plus.Font = Enum.Font.GothamBold
+Plus.TextSize = 16
+Plus.TextColor3 = Color3.fromRGB(255, 255, 255)
+Plus.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+Plus.Parent = SliderRow
+local pc = Instance.new("UICorner") pc.CornerRadius = UDim.new(0, 6) pc.Parent = Plus
+local ValBox = Instance.new("TextBox")
+ValBox.Size = UDim2.new(1, -132, 1, 0)
+ValBox.Position = UDim2.new(0, 66, 0, 0)
+ValBox.Text = tostring(Config.Aimbot.Strength)
+ValBox.Font = Enum.Font.GothamBold
+ValBox.TextSize = 14
+ValBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+ValBox.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+ValBox.ClearTextOnFocus = false
+ValBox.Parent = SliderRow
+local vc = Instance.new("UICorner") vc.CornerRadius = UDim.new(0, 6) vc.Parent = ValBox
+
+local function SetStrength(v)
+    v = math.clamp(math.floor(tonumber(v) or Config.Aimbot.Strength), 1, 100)
+    Config.Aimbot.Strength = v
+    StrengthLabel.Text = "에임봇 강도 : " .. tostring(v)
+    ValBox.Text = tostring(v)
+    SliderFill.Size = UDim2.new(v / 100, 0, 1, 0)
+end
+
+local dragging = false
+SliderBack.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        local x = math.clamp((input.Position.X - SliderBack.AbsolutePosition.X) / SliderBack.AbsoluteSize.X, 0, 1)
+        SetStrength(math.floor(x * 100 + 0.5))
+    end
+end)
+table.insert(Connections, UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local x = math.clamp((input.Position.X - SliderBack.AbsolutePosition.X) / SliderBack.AbsoluteSize.X, 0, 1)
+        local v = math.clamp(math.floor(x * 100 + 0.5), 1, 100)
+        SetStrength(v)
+    end
+end))
+table.insert(Connections, UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end))
+Minus.MouseButton1Click:Connect(function() SetStrength(Config.Aimbot.Strength - 5) end)
+Plus.MouseButton1Click:Connect(function() SetStrength(Config.Aimbot.Strength + 5) end)
+ValBox.FocusLost:Connect(function(enter)
+    if enter then SetStrength(ValBox.Text) end
+end)
+
+MakeLabel("에임봇 부위")
+local PartRow = Instance.new("Frame")
+PartRow.Size = UDim2.new(1, -4, 0, 32)
+PartRow.BackgroundTransparency = 1
+PartRow.Parent = Scroll
+local PartButtons = {}
+local PARTS = {
+    { label = "머리", value = "Head" },
+    { label = "몸", value = "HumanoidRootPart" },
+    { label = "머리+몸", value = "Closest" },
+}
+local function RefreshParts()
+    for _, b in ipairs(PartButtons) do
+        local selected = (Config.Aimbot.TargetPart == b.Value)
+        b.Btn.BackgroundColor3 = selected and Color3.fromRGB(70, 130, 255) or Color3.fromRGB(50, 50, 58)
+    end
+end
+for i, p in ipairs(PARTS) do
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1 / 3, -4, 1, 0)
+    b.Position = UDim2.new((i - 1) / 3, (i == 1) and 0 or 2, 0, 0)
+    if i == 3 then b.Position = UDim2.new(2 / 3, 4, 0, 0) end
+    if i == 2 then b.Position = UDim2.new(1 / 3, 0, 0, 0) end
+    b.Text = p.label
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 13
+    b.TextColor3 = Color3.fromRGB(255, 255, 255)
+    b.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+    b.Parent = PartRow
+    local cc = Instance.new("UICorner") cc.CornerRadius = UDim.new(0, 6) cc.Parent = b
+    local entry = { Btn = b, Value = p.value }
+    table.insert(PartButtons, entry)
+    b.MouseButton1Click:Connect(function()
+        Config.Aimbot.TargetPart = p.value
+        RefreshParts()
+    end)
+end
+RefreshParts()
+
+-- ESP 섹션
+MakeLabel("-- ESP --")
+MakeTogglePair("ESP", Config.ESP.Enabled, function(v) Config.ESP.Enabled = v end,
+    "박스", Config.ESP.Boxes, function(v) Config.ESP.Boxes = v end)
+MakeTogglePair("체력바", Config.ESP.HealthBar, function(v) Config.ESP.HealthBar = v end,
+    "이름", Config.ESP.Names, function(v) Config.ESP.Names = v end)
+MakeTogglePair("거리", Config.ESP.Distance, function(v) Config.ESP.Distance = v end,
+    "스냅라인", Config.ESP.Snaplines, function(v) Config.ESP.Snaplines = v end)
+
+-- 이동 섹션
+MakeLabel("-- 이동 --")
+MakeTogglePair("플라이", Config.Fly.Enabled, function(v)
+    if v then SetFly(true) else SetFly(false) end
+end, "노클립", Config.Noclip.Enabled, function(v)
+    Config.Noclip.Enabled = v
+    if not v then SetNoclipCollide(true) end
+end)
+if Config.Fly.Enabled then SetFly(true) end
+
+local FlySpeedLabel = MakeLabel("플라이 속도 : " .. tostring(Config.Fly.Speed))
+local FlyBack = Instance.new("Frame")
+FlyBack.Size = UDim2.new(1, -4, 0, 26)
+FlyBack.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+FlyBack.BorderSizePixel = 0
+FlyBack.Parent = Scroll
+local flysc = Instance.new("UICorner") flysc.CornerRadius = UDim.new(0, 6) flysc.Parent = FlyBack
+local FlyFill = Instance.new("Frame")
+FlyFill.Size = UDim2.new(Config.Fly.Speed / 500, 0, 1, 0)
+FlyFill.BackgroundColor3 = Color3.fromRGB(70, 200, 130)
+FlyFill.BorderSizePixel = 0
+FlyFill.Parent = FlyBack
+local flyfc = Instance.new("UICorner") flyfc.CornerRadius = UDim.new(0, 6) flyfc.Parent = FlyFill
+local FlyRow = Instance.new("Frame")
+FlyRow.Size = UDim2.new(1, -4, 0, 28)
+FlyRow.BackgroundTransparency = 1
+FlyRow.Parent = Scroll
+local FlyMinus = Instance.new("TextButton")
+FlyMinus.Size = UDim2.new(0, 60, 1, 0)
+FlyMinus.Text = "-"
+FlyMinus.Font = Enum.Font.GothamBold
+FlyMinus.TextSize = 16
+FlyMinus.TextColor3 = Color3.fromRGB(255, 255, 255)
+FlyMinus.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+FlyMinus.Parent = FlyRow
+local flymc = Instance.new("UICorner") flymc.CornerRadius = UDim.new(0, 6) flymc.Parent = FlyMinus
+local FlyPlus = Instance.new("TextButton")
+FlyPlus.Size = UDim2.new(0, 60, 1, 0)
+FlyPlus.Position = UDim2.new(1, -60, 0, 0)
+FlyPlus.Text = "+"
+FlyPlus.Font = Enum.Font.GothamBold
+FlyPlus.TextSize = 16
+FlyPlus.TextColor3 = Color3.fromRGB(255, 255, 255)
+FlyPlus.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+FlyPlus.Parent = FlyRow
+local flypc = Instance.new("UICorner") flypc.CornerRadius = UDim.new(0, 6) flypc.Parent = FlyPlus
+local FlyBox = Instance.new("TextBox")
+FlyBox.Size = UDim2.new(1, -132, 1, 0)
+FlyBox.Position = UDim2.new(0, 66, 0, 0)
+FlyBox.Text = tostring(Config.Fly.Speed)
+FlyBox.Font = Enum.Font.GothamBold
+FlyBox.TextSize = 14
+FlyBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+FlyBox.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+FlyBox.ClearTextOnFocus = false
+FlyBox.Parent = FlyRow
+local flyvc = Instance.new("UICorner") flyvc.CornerRadius = UDim.new(0, 6) flyvc.Parent = FlyBox
+local function SetFlySpeed(v)
+    v = math.clamp(math.floor(tonumber(v) or Config.Fly.Speed), 1, 500)
+    Config.Fly.Speed = v
+    FlySpeedLabel.Text = "플라이 속도 : " .. tostring(v)
+    FlyBox.Text = tostring(v)
+    FlyFill.Size = UDim2.new(v / 500, 0, 1, 0)
+end
+local flyDragging = false
+FlyBack.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        flyDragging = true
+        local x = math.clamp((input.Position.X - FlyBack.AbsolutePosition.X) / FlyBack.AbsoluteSize.X, 0, 1)
+        SetFlySpeed(math.floor(x * 500 + 0.5))
+    end
+end)
+table.insert(Connections, UserInputService.InputChanged:Connect(function(input)
+    if flyDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local x = math.clamp((input.Position.X - FlyBack.AbsolutePosition.X) / FlyBack.AbsoluteSize.X, 0, 1)
+        local v = math.clamp(math.floor(x * 500 + 0.5), 1, 500)
+        SetFlySpeed(v)
+    end
+end))
+table.insert(Connections, UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        flyDragging = false
+    end
+end))
+FlyMinus.MouseButton1Click:Connect(function() SetFlySpeed(Config.Fly.Speed - 10) end)
+FlyPlus.MouseButton1Click:Connect(function() SetFlySpeed(Config.Fly.Speed + 10) end)
+FlyBox.FocusLost:Connect(function(enter)
+    if enter then SetFlySpeed(FlyBox.Text) end
+end)
+
+MakeTogglePair("걷기 속도", Config.Walk.Enabled, function(v)
+    SetWalk(v)
+end, "무한 점프", Config.InfJump.Enabled, function(v)
+    Config.InfJump.Enabled = v
+end)
+if Config.Walk.Enabled then ApplyWalk() end
+
+local WalkSpeedLabel = MakeLabel("걷기 속도 : " .. tostring(Config.Walk.Speed))
+local WalkBack = Instance.new("Frame")
+WalkBack.Size = UDim2.new(1, -4, 0, 26)
+WalkBack.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+WalkBack.BorderSizePixel = 0
+WalkBack.Parent = Scroll
+local walksc = Instance.new("UICorner") walksc.CornerRadius = UDim.new(0, 6) walksc.Parent = WalkBack
+local WalkFill = Instance.new("Frame")
+WalkFill.Size = UDim2.new(Config.Walk.Speed / 500, 0, 1, 0)
+WalkFill.BackgroundColor3 = Color3.fromRGB(200, 150, 70)
+WalkFill.BorderSizePixel = 0
+WalkFill.Parent = WalkBack
+local walkfc = Instance.new("UICorner") walkfc.CornerRadius = UDim.new(0, 6) walkfc.Parent = WalkFill
+local WalkRow = Instance.new("Frame")
+WalkRow.Size = UDim2.new(1, -4, 0, 28)
+WalkRow.BackgroundTransparency = 1
+WalkRow.Parent = Scroll
+local WalkMinus = Instance.new("TextButton")
+WalkMinus.Size = UDim2.new(0, 60, 1, 0)
+WalkMinus.Text = "-"
+WalkMinus.Font = Enum.Font.GothamBold
+WalkMinus.TextSize = 16
+WalkMinus.TextColor3 = Color3.fromRGB(255, 255, 255)
+WalkMinus.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+WalkMinus.Parent = WalkRow
+local walkmc = Instance.new("UICorner") walkmc.CornerRadius = UDim.new(0, 6) walkmc.Parent = WalkMinus
+local WalkPlus = Instance.new("TextButton")
+WalkPlus.Size = UDim2.new(0, 60, 1, 0)
+WalkPlus.Position = UDim2.new(1, -60, 0, 0)
+WalkPlus.Text = "+"
+WalkPlus.Font = Enum.Font.GothamBold
+WalkPlus.TextSize = 16
+WalkPlus.TextColor3 = Color3.fromRGB(255, 255, 255)
+WalkPlus.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+WalkPlus.Parent = WalkRow
+local walkpc = Instance.new("UICorner") walkpc.CornerRadius = UDim.new(0, 6) walkpc.Parent = WalkPlus
+local WalkBox = Instance.new("TextBox")
+WalkBox.Size = UDim2.new(1, -132, 1, 0)
+WalkBox.Position = UDim2.new(0, 66, 0, 0)
+WalkBox.Text = tostring(Config.Walk.Speed)
+WalkBox.Font = Enum.Font.GothamBold
+WalkBox.TextSize = 14
+WalkBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+WalkBox.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+WalkBox.ClearTextOnFocus = false
+WalkBox.Parent = WalkRow
+local walkvc = Instance.new("UICorner") walkvc.CornerRadius = UDim.new(0, 6) walkvc.Parent = WalkBox
+local function SetWalkSpeed(v)
+    v = math.clamp(math.floor(tonumber(v) or Config.Walk.Speed), 1, 500)
+    Config.Walk.Speed = v
+    WalkSpeedLabel.Text = "걷기 속도 : " .. tostring(v)
+    WalkBox.Text = tostring(v)
+    WalkFill.Size = UDim2.new(v / 500, 0, 1, 0)
+    if Config.Walk.Enabled then ApplyWalk() end
+end
+local walkDragging = false
+WalkBack.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        walkDragging = true
+        local x = math.clamp((input.Position.X - WalkBack.AbsolutePosition.X) / WalkBack.AbsoluteSize.X, 0, 1)
+        SetWalkSpeed(math.floor(x * 500 + 0.5))
+    end
+end)
+table.insert(Connections, UserInputService.InputChanged:Connect(function(input)
+    if walkDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local x = math.clamp((input.Position.X - WalkBack.AbsolutePosition.X) / WalkBack.AbsoluteSize.X, 0, 1)
+        local v = math.clamp(math.floor(x * 500 + 0.5), 1, 500)
+        SetWalkSpeed(v)
+    end
+end))
+table.insert(Connections, UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        walkDragging = false
+    end
+end))
+WalkMinus.MouseButton1Click:Connect(function() SetWalkSpeed(Config.Walk.Speed - 10) end)
+WalkPlus.MouseButton1Click:Connect(function() SetWalkSpeed(Config.Walk.Speed + 10) end)
+WalkBox.FocusLost:Connect(function(enter)
+    if enter then SetWalkSpeed(WalkBox.Text) end
+end)
+
+-- Rage Bot 섹션
+MakeLabel("-- Rage Bot --")
+MakeToggle("레이지 봇", S.ragebotOn, function(v)
+    S.ragebotOn = v
+    env._ragebotActive = v
+    if env._riv_startRagebot then env._riv_startRagebot(v) end
+    Notify("레이지 봇", v and "ON - 타겟팅 + 데스싱크" or "OFF")
+end)
+local RagebotLabel = MakeLabel("레이지봇: OFF | 안정도: " .. S.ragebotStability)
+
+MakeToggle("Fast Shot", S.rivRapidFire, function(v)
+    S.rivRapidFire = v
+    env._rivRapidFire = v
+    Notify("Fast Shot", v and "ON - 연사속도 최저" or "OFF")
+end)
+MakeToggle("No Spread", S.rivNoRecoil, function(v)
+    S.rivNoRecoil = v
+    env._rivNoRecoil = v
+    Notify("No Spread", v and "ON - 후발산/리코일 0" or "OFF")
+end)
+
+-- Trigger Bot 섹션
+MakeToggle("Trigger Bot", S.triggerBotOn, function(v)
+    S.triggerBotOn = v
+    if v then Notify("Trigger Bot", "ON - 적 조준 시 자동 발사") else Notify("Trigger Bot", "OFF") end
+end)
+
+-- 장치 스푸프 섹션
+MakeLabel("-- Device Spoof --")
+local _DS_Current = "Computer"
+local _DS_StatusLabel = MakeLabel("장치: Computer (적용 안 함)")
+local _DS_ButtonRow = Instance.new("Frame")
+_DS_ButtonRow.Size = UDim2.new(1, -4, 0, 32)
+_DS_ButtonRow.BackgroundTransparency = 1
+_DS_ButtonRow.Parent = Scroll
+local _DS_Devices = {"Computer", "Mobile", "Console", "VR"}
+local _DS_ButtonObjs = {}
+for i, d in ipairs(_DS_Devices) do
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0.25, -3, 1, 0)
+    b.Position = UDim2.new((i - 1) * 0.25, (i == 1) and 0 or 2, 0, 0)
+    b.Text = d
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 11
+    b.TextColor3 = Color3.fromRGB(255, 255, 255)
+    b.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+    b.Parent = _DS_ButtonRow
+    local cc = Instance.new("UICorner") cc.CornerRadius = UDim.new(0, 6) cc.Parent = b
+    local entry = { Btn = b, Value = d }
+    table.insert(_DS_ButtonObjs, entry)
+    b.MouseButton1Click:Connect(function()
+        _DS_Current = d
+        for _, e in ipairs(_DS_ButtonObjs) do
+            e.Btn.BackgroundColor3 = (e.Value == _DS_Current) and Color3.fromRGB(70, 130, 255) or Color3.fromRGB(50, 50, 58)
+        end
+    end)
+end
+local _DS_Apply = Instance.new("TextButton")
+_DS_Apply.Size = UDim2.new(1, -4, 0, 28)
+_DS_Apply.Position = UDim2.new(0, 0, 0, 38)
+_DS_Apply.BackgroundColor3 = Color3.fromRGB(25, 45, 75)
+_DS_Apply.BorderColor3 = Color3.fromRGB(50, 80, 130)
+_DS_Apply.BorderSizePixel = 1
+_DS_Apply.Text = "Apply Spoof"
+_DS_Apply.TextColor3 = Color3.fromRGB(100, 180, 255)
+_DS_Apply.TextSize = 12
+_DS_Apply.Font = Enum.Font.Code
+_DS_Apply.Parent = Scroll
+_DS_Apply.MouseButton1Click:Connect(function()
+    local control = _deviceMap[_DS_Current]
+    if not control then
+        _DS_StatusLabel.Text = "장치: 오류 — 알 수 없는 기기"
+        return
+    end
+    local ok, err = pcall(function()
+        local RS = game:GetService("ReplicatedStorage")
+        local remotes = RS:FindFirstChild("Remotes")
+            or RS:FindFirstChild("Remote")
+        if not remotes then error("Remotes folder not found") end
+        local replication = remotes:FindFirstChild("Replication")
+        if not replication then error("Replication not found") end
+        local fighter = replication:FindFirstChild("Fighter")
+        if not fighter then error("Fighter not found") end
+        local setControls = fighter:FindFirstChild("SetControls")
+        if not setControls then error("SetControls not found") end
+        setControls:FireServer(control)
+    end)
+    if ok then
+        _DS_StatusLabel.Text = "장치: " .. _DS_Current .. " — 적용됨"
+        print("[DeviceSpoof] Applied:", _DS_Current, "→", control)
+    else
+        _DS_StatusLabel.Text = "장치: " .. _DS_Current .. " — 실패 (" .. tostring(err) .. ")"
+        warn("[DeviceSpoof] Failed:", err)
+    end
+end)
+
+ScreenGui.Parent = GetGuiParent()
+ScreenGui.Enabled = true
+
+local MenuOpen = true
+local SavedMouseBehavior = nil
+local _savedRagebotOn = false
+local _savedTriggerBotOn = false
+local function SetMenu(open)
+    MenuOpen = open
+    ScreenGui.Enabled = open
+    if open then
+        _savedRagebotOn = S.ragebotOn
+        _savedTriggerBotOn = S.triggerBotOn
+        S.ragebotOn = false
+        S.triggerBotOn = false
+    else
+        S.ragebotOn = _savedRagebotOn
+        S.triggerBotOn = _savedTriggerBotOn
+    end
+    pcall(function()
+        if open then
+            SavedMouseBehavior = UserInputService.MouseBehavior
+            UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+            UserInputService.MouseIconEnabled = true
+        elseif SavedMouseBehavior then
+            UserInputService.MouseBehavior = SavedMouseBehavior
+        end
+    end)
+end
+SetMenu(true)
+
+-- ============ Input ============
+table.insert(Connections, UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.UserInputType == Config.Aimbot.HoldKey then
+        Holding = true
+    elseif input.KeyCode == Enum.KeyCode.RightShift then
+        SetMenu(not MenuOpen)
+    elseif input.KeyCode == Enum.KeyCode.PageUp then
+        Config.Aimbot.FOV += 10
+        FOVCircle.Radius = Config.Aimbot.FOV
+        FOVOutline.Radius = Config.Aimbot.FOV
+    elseif input.KeyCode == Enum.KeyCode.PageDown then
+        Config.Aimbot.FOV = math.max(20, Config.Aimbot.FOV - 10)
+        FOVCircle.Radius = Config.Aimbot.FOV
+        FOVOutline.Radius = Config.Aimbot.FOV
+    end
+end))
+table.insert(Connections, UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Config.Aimbot.HoldKey then
+        Holding = false
+    end
+end))
+
+-- ============ Main loop ============
+table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
+    if MenuOpen then
+        pcall(function()
+            if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
+                UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+            end
+            if not UserInputService.MouseIconEnabled then
+                UserInputService.MouseIconEnabled = true
+            end
+        end)
+        if not ScreenGui.Parent then
+            pcall(function() ScreenGui.Parent = GetGuiParent() end)
+        end
+        if not ScreenGui.Enabled then
+            ScreenGui.Enabled = true
+        end
+    end
+
+    local viewportSize = Camera.ViewportSize
+    local mouse = UserInputService:GetMouseLocation()
+
+    FOVCircle.Position = mouse
+    FOVOutline.Position = mouse
+    FOVCircle.Visible = Config.Aimbot.Enabled and not MenuOpen
+    FOVOutline.Visible = Config.Aimbot.Enabled and not MenuOpen
+
+    if Config.Walk.Enabled then
+        local ch = LocalPlayer.Character
+        local hh = ch and ch:FindFirstChildOfClass("Humanoid")
+        if hh then
+            pcall(function() hh.WalkSpeed = math.max(Config.Walk.Speed, DEFAULT_WALK) end)
+        end
+    end
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local ok, err = pcall(UpdateESPPlayer, plr, viewportSize)
+        if not ok then warn(err) end
+    end
+    for plr, objs in pairs(ESPObjects) do
+        if not plr.Parent then HideESP(objs) ESPObjects[plr] = nil end
+    end
+
+    if Config.Aimbot.Enabled and not MenuOpen then
+        local canMove = true
+        if iswindowactive then
+            local ok, active = pcall(iswindowactive)
+            if ok then canMove = active end
+        end
+        if canMove then
+            local target = GetClosestTarget()
+            if target then
+                local sp = Camera:WorldToViewportPoint(target.Position)
+                local dx = sp.X - mouse.X
+                local dy = sp.Y - mouse.Y
+                local s = StrengthToSmooth(Config.Aimbot.Strength)
+                local mx, my
+                if s <= 1.01 then
+                    mx, my = math.round(dx), math.round(dy)
+                else
+                    mx, my = math.round(dx / s), math.round(dy / s)
+                end
+                if mx ~= 0 or my ~= 0 then
+                    pcall(mousemoverel, mx, my)
+                end
+            end
+        end
+    end
+end))
+
+table.insert(Connections, RunService.Heartbeat:Connect(function(dt)
+    local ok, err = pcall(FlyStep)
+    if not ok then warn(err) end
+    local ok2, err2 = pcall(WalkStep, dt)
+    if not ok2 then warn(err2) end
+    local ok3, err3 = pcall(NoclipStep)
+    if not ok3 then warn(err3) end
+    local ok4, err4 = pcall(RagebotStep)
+    if not ok4 then warn(err4) end
+    local ok5, err5 = pcall(TriggerBotStep)
+    if not ok5 then warn(err5) end
+end))
+
+table.insert(Connections, LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1)
+    if Config.Fly.Enabled then SetFly(true) end
+    if Config.Walk.Enabled then ApplyWalk() end
+end))
+
+table.insert(Connections, UserInputService.JumpRequest:Connect(function()
+    if not Config.InfJump.Enabled then return end
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function() hum:ChangeState(Enum.HumanoidStateType.Jumping) end)
+    end
+end))
+
+table.insert(Connections, Players.PlayerRemoving:Connect(function(plr)
+    local o = ESPObjects[plr]
+    if o then HideESP(o) ESPObjects[plr] = nil end
+end))
+
+local startupWpn = nil
+pcall(function() startupWpn = GetPlayerWeaponName(LocalPlayer) end)
+Notify("RIVALS HUB " .. HUB_VERSION, "로드됨 | 장착 무기: " .. (startupWpn or "미감지"))
+print("[RIVALS HUB " .. HUB_VERSION .. "] loaded. Weapon:", startupWpn or "nil", "Strength:", Config.Aimbot.Strength, "Smooth:", StrengthToSmooth(Config.Aimbot.Strength))
