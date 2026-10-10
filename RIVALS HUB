@@ -1,4 +1,4 @@
--- RIVALS HUB V0.0.9.14 | Madium | Obsidian UI
+-- RIVALS HUB V0.9.1 | Madium | Obsidian UI
 -- RightShift = 창 열기/닫기, 에임봇 ON이면 상시 작동(홀드 불필요)
 
 if getgenv().RivalsAimESP_Loaded then
@@ -65,7 +65,7 @@ getgenv().RivalsObsidian = Library
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
-local HUB_VERSION = "V0.0.9.14"
+local HUB_VERSION = "V0.9.1"
 
 -- ============ Language (체험 언어 자동: ko → 한국어, else English) ============
 -- 우선순위: getgenv().RivalsLang 수동 지정("ko"/"en") > RobloxLocaleId 자동 감지 > 기본 한국어
@@ -2285,6 +2285,9 @@ local function saInstallHook()
         end
         old = hookfunction(useItem.FireServer, fn)
         _saOldFireServer = old
+        regRestore(function()
+            pcall(function() hookfunction(useItem.FireServer, old) end)
+        end)
     end)
     if ok then
         _saHookInstalled = true
@@ -2347,6 +2350,7 @@ do
         end
     end)
     env._silentFOVCircle = saFovCircle
+    env._silentFOVOutline = saFovOutline
     if saFovCircle then
         local okConn, conn = pcall(function()
             return RunService.RenderStepped:Connect(function()
@@ -2972,10 +2976,47 @@ local function DisconnectAll()
     table.clear(EspChams)
     pcall(function() FOVCircle:Remove() end)
     pcall(function() FOVOutline:Remove() end)
+    -- 사일런트 FOV 원 + 연결 (언로드 시 화면에 남던 누수)
+    pcall(function()
+        if getgenv().RivalsSilentFOVConn then getgenv().RivalsSilentFOVConn:Disconnect() end
+        getgenv().RivalsSilentFOVConn = nil
+    end)
+    pcall(function() if env._silentFOVCircle then env._silentFOVCircle:Remove() end env._silentFOVCircle = nil end)
+    pcall(function() if env._silentFOVOutline then env._silentFOVOutline:Remove() end env._silentFOVOutline = nil end)
     for _, g in ipairs(GuiObjects) do pcall(function() g:Destroy() end) end
     table.clear(GuiObjects)
 end
 local _cleanedUp = false
+-- 언로드 시 게임 후킹 전부 원복 (ClientItem.Input + Gun + 사일런트/레이지 UseItem/StartShooting)
+local function RestoreAllHooks()
+    local n = 0
+    local H = env._hookOrig or {}
+    for _, e in pairs(H) do
+        if type(e) == "table" and e.mod and e.fn then
+            if pcall(function() rawset(e.mod, "Input", e.fn) end) then n += 1 end
+        end
+    end
+    local R = getgenv().RivalsHookRestore or {}
+    for _, fn in ipairs(R) do
+        if type(fn) == "function" then
+            if pcall(fn) then n += 1 end
+        end
+    end
+    -- Harion 사일런트 훅 (원본 직접 보관분)
+    pcall(function()
+        if _saOldFireServer ~= nil then
+            local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+            local rep = remotes and remotes:FindFirstChild("Replication")
+            local fg = rep and rep:FindFirstChild("Fighter")
+            local ui = fg and fg:FindFirstChild("UseItem")
+            if ui and ui:IsA("RemoteEvent") then
+                hookfunction(ui.FireServer, _saOldFireServer)
+                n += 1
+            end
+        end
+    end)
+    return n
+end
 local function FullCleanup()
     if _cleanedUp then return end
     _cleanedUp = true
@@ -2985,6 +3026,7 @@ local function FullCleanup()
     env._rivNoRecoil = false
     env._ragebotActive = false
     pcall(StopUserRagebot)
+    pcall(RestoreAllHooks)
     DisconnectAll()
     pcall(RestoreSky)
     pcall(function()
@@ -2995,6 +3037,8 @@ local function FullCleanup()
         if Library and Library.Unload then Library:Unload() end
     end)
     getgenv().RivalsAimESP_Loaded = false
+    print("[RivalsHub] unloaded")
+    Notify("RIVALS HUB", T("언로드됨", "Unloaded"))
 end
 getgenv().RivalsAimESP_Cleanup = FullCleanup
 
@@ -6681,6 +6725,7 @@ WorldBox:AddButton({
 -- ---------- Updates ----------
 local UpBox = Tabs.Updates:AddGroupbox({ Side = "Left", Name = "Changelog", IconName = "bell" })
 local RIV_CHANGELOG = {
+    { v = "V0.9.1", text = T("언로드 수정 — 버튼 형식 오류(무반응) + 사일런트 FOV 잔상 + 후킹 미원복 해결. 언로드 시 전 후킹 원복 + 전 도형 제거 + 완료 알림.", "Unload fix — dead button format + leftover silent FOV + unrestored hooks. Unload now restores all hooks, removes all drawings, and notifies.") },
     { v = "V0.0.9.14", text = T("랭크 표시 수정 — Kicia RankTracker 이식(DisplayELO + SeasonLibrary → 랭크명). 기존 leaderstats/Rank 경로는 존재하지 않아 항상 숨겨졌음. 윈스트릭 속성명 폴백 추가.", "Rank ESP fix — ported Kicia RankTracker (DisplayELO + SeasonLibrary rank name). Old leaderstats/Rank path never existed so it stayed hidden. Winstreak attribute fallbacks added.") },
     { v = "V0.0.9.13", text = T("언어 전체 적용 — 전 메뉴 한/영 전환 + 감지 강화(cloneref/정규화) + 콘솔 locale 출력 + UI Settings 수동 선택(자동/한국어/English).", "Full language support — entire menu KR/EN + hardened detection (cloneref/normalize) + console locale print + manual override in UI Settings.") },
     { v = "V0.0.9.12", text = "사일런트 FOV 독립 렌더러(마우스 중심) + ESP Kicia 풀옵션(Filled/Ammo/Head모양/Tracer/Chams/Skeleton) + 체험언어 한/영 자동 전환." },
@@ -6821,7 +6866,7 @@ MenuGroup:AddSlider("RIV_Corner", {
 })
 MenuGroup:AddDivider()
 MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu keybind" })
-MenuGroup:AddButton("Unload", function() FullCleanup() end)
+MenuGroup:AddButton({ Text = T("언로드", "Unload"), Func = function() FullCleanup() end })
 Library.ToggleKeybind = Options.MenuKeybind
 
 -- 메뉴 열림/닫힘 ↔ 레이지봇/트리거봇 일시정지 동기화
