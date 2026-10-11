@@ -1,4 +1,4 @@
--- RIVALS HUB V0.9.3e | Madium | Obsidian UI
+-- RIVALS HUB V0.9.4d | Madium | Obsidian UI
 -- RightShift = 창 열기/닫기, 에임봇 ON이면 상시 작동(홀드 불필요)
 
 if getgenv().RivalsAimESP_Loaded then
@@ -65,7 +65,7 @@ getgenv().RivalsObsidian = Library
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
-local HUB_VERSION = "V0.9.3e"
+local HUB_VERSION = "V0.9.4d"
 
 -- ============ Language (체험 언어 자동: ko → 한국어, else English) ============
 -- 우선순위: getgenv().RivalsLang > 파일(RivalsHub/lang.txt, 리조인 유지) > 플레이어 LocaleId > RobloxLocaleId > 기본 한국어
@@ -230,7 +230,7 @@ local S = {
     rageSlotOrder = { "Primary", "Secondary", "Melee" },
     auraOn = false, triggerBotOn = false, wallbangOn = false,
     triggerReactionMs = 100, triggerReactionOffsetMs = 0, triggerForgetSec = 0.5,
-    triggerShootDelayMs = 0, triggerMaxDist = 500,
+    triggerShootDelayMs = 0, triggerMaxDist = 500, triggerWallCheck = true,
     godModeOn = false, orbitOn = false, voidSpanOn = false, infiniteJumpOn = false,
     forceThirdPersonOn = false, teleporterOn = false, lastTeleportTick = 0, teleportDistance = 50000,
     walkSpeed = 16, fightSpeed = 50, showKeybindsOn = true, showWatermarkOn = true,
@@ -1067,11 +1067,17 @@ local function StartUserRagebot()
                 task.wait(math.clamp(stab, 0.01, 1))
             end
             if self.__task1 then task.cancel(self.__task1); self.__task1 = nil end
-            local head = target.Character:FindFirstChild("Head")
+            -- 리졸버 ON이면 방패/카타나 정면은 가공 없이 통과 (탄 낭비 방지)
+            if S.ragebotResolver and target.Character and not ResolveShotSafe(target.Character) then
+                return unpack(results)
+            end
+            -- HitboxHead 우선 (서버 히트박스 기준, 명중률 향상) + 중심 정조준
+            local head = target.Character:FindFirstChild("HitboxHead")
+                or target.Character:FindFirstChild("Head")
             if not head then return unpack(results) end
             local headPos = head.Position
             local headCF = head.CFrame
-            local offset = headCF:ToObjectSpace(CFrame.new(headPos + Vector3.new(math.random() * 0.1, math.random() * 0.1, math.random() * 0.1)))
+            local offset = headCF:ToObjectSpace(CFrame.new(headPos))
             data[utf8.char(0)] = UtilityModule:EncodeCFrame(CFrame.new(headPos, headPos + head.CFrame.LookVector))
             data[utf8.char(1)] = UtilityModule:EncodeCFrame(CFrame.new(headPos))
             data[utf8.char(2)] = head
@@ -2487,8 +2493,9 @@ local function _saStatusTick(force)
     if not force and now - SA_D.t < 1 then return end
     SA_D.t = now
     pcall(function()
-        Options.RIV_SilentStatus:SetText(string.format("Silent: %s | Seen %d | Redirected %d",
-            SA_H.installed and "Hooked" or "Waiting", SA_D.shots, SA_D.hits))
+        Options.RIV_SilentStatus:SetText(string.format("Silent: %s | Seen %d | Redirected %d | FOV:%s",
+            SA_H.installed and "Hooked" or "Waiting", SA_D.shots, SA_D.hits,
+            env._silentFOVCircle and "ok" or "nil"))
     end)
 end
 
@@ -2500,6 +2507,22 @@ function _playerHoldingKatana(plr)
     return false
 end
 
+-- 팀 체크 (saGetTarget보다 먼저 정의: TeamID 우선, Team 폴백)
+local function saIsTeammate(plr)
+    if plr == LocalPlayer then return true end
+    local skip = false
+    pcall(function()
+        local pt = plr:GetAttribute("TeamID")
+        local lt = LocalPlayer:GetAttribute("TeamID")
+        if pt ~= nil and lt ~= nil then
+            skip = (pt == lt)
+        elseif LocalPlayer.Team and plr.Team then
+            skip = (LocalPlayer.Team == plr.Team)
+        end
+    end)
+    return skip
+end
+
 local function saGetTarget()
     local cam = Workspace.CurrentCamera
     if not cam then return nil, nil end
@@ -2509,7 +2532,8 @@ local function saGetTarget()
     local bestChar, bestPart, bestDist = nil, nil, fov
     local prefer = S.silentAimHitPart or "Head"
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer and plr.Character then
+        if plr ~= LocalPlayer and plr.Character
+            and not (Config.Aimbot.TeamCheck and saIsTeammate(plr)) then
             if not (S.antiKatanaOn and _playerHoldingKatana(plr)) then
                 local char = plr.Character
                 local hum = char:FindFirstChildOfClass("Humanoid")
@@ -2718,31 +2742,7 @@ do
     if saFovCircle == nil then
         warn("[RivalsHub] Silent FOV: Drawing unavailable — circle disabled")
     end
-    if saFovCircle then
-        local okConn, conn = pcall(function()
-            return RunService.RenderStepped:Connect(function()
-                if getgenv().RivalsHubDead then return end
-                local r = tonumber(S.silentAimFOV) or 350
-                local vis = S.silentAimOn and S.silentShowFOV
-                local mpos = nil
-                pcall(function() mpos = UserInputService:GetMouseLocation() end)
-                if not mpos then
-                    local cam = Workspace.CurrentCamera
-                    if cam then mpos = cam.ViewportSize / 2 else return end
-                end
-                for _, c in ipairs({ saFovOutline, saFovCircle }) do
-                    if c then
-                        c.Position = mpos
-                        c.Radius = r
-                        c.Visible = vis
-                    end
-                end
-            end)
-        end)
-        if okConn and conn then
-            getgenv().RivalsSilentFOVConn = conn
-        end
-    end
+    -- 렌더는 아래 메인 루프에서 직접 구동 (독립 연결 제거)
 end
 
 if false then -- SILENT-V2-OFF-START (Harion 원본 사용)
@@ -3312,7 +3312,22 @@ local function TriggerBotStep()
                     local maxD = tonumber(S.triggerMaxDist) or 500
                     if math.sqrt(dx * dx + dy * dy) <= 10
                         and (cam.CFrame.Position - target.Position).Magnitude <= maxD then
-                        valid = true
+                        -- 벽 체크: 가려진 적은 보이지 않는 것으로 처리
+                        local walled = false
+                        if S.triggerWallCheck ~= false then
+                            pcall(function()
+                                local myChar = LocalPlayer.Character
+                                local ign = { cam }
+                                if myChar then table.insert(ign, myChar) end
+                                if ch then table.insert(ign, ch) end
+                                local params = RaycastParams.new()
+                                params.FilterType = Enum.RaycastFilterType.Exclude
+                                params.FilterDescendantsInstances = ign
+                                params.IgnoreWater = true
+                                walled = Workspace:Raycast(cam.CFrame.Position, target.Position - cam.CFrame.Position, params) ~= nil
+                            end)
+                        end
+                        if not walled then valid = true end
                     end
                 end
             end
@@ -4537,10 +4552,16 @@ local function DisconnectAll()
         if char then
             local hum = char:FindFirstChildOfClass("Humanoid")
             if hum then hum.WalkSpeed = 16 end
+            -- 정상 캐릭터 기본값은 전부 CanCollide=false (true로 두면 지면과 겹쳐 위로 튕김)
             for _, p in ipairs(char:GetDescendants()) do
-                if p:IsA("BasePart") and p.Name ~= "Head" then
-                    p.CanCollide = true
+                if p:IsA("BasePart") then
+                    p.CanCollide = false
                 end
+            end
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
             end
         end
     end)
@@ -4660,10 +4681,19 @@ local function IsAlive(player, char, humanoid)
 end
 
 local function IsTeammate(player)
-    if LocalPlayer.Team and player.Team and LocalPlayer.Team == player.Team then
-        return true
-    end
-    return false
+    if player == LocalPlayer then return true end
+    -- Rivals 팀 판정: TeamID 어트리뷰트 우선, Team 객체 폴백 (둘 다 없으면 FFA로 간주=적)
+    local same = false
+    pcall(function()
+        local pt = player:GetAttribute("TeamID")
+        local lt = LocalPlayer:GetAttribute("TeamID")
+        if pt ~= nil and lt ~= nil then
+            same = (pt == lt)
+        elseif LocalPlayer.Team and player.Team then
+            same = (LocalPlayer.Team == player.Team)
+        end
+    end)
+    return same
 end
 
 local function HasWallBetween(origin, targetPos, ignoreList)
@@ -5412,14 +5442,11 @@ end
 local function SetNoclipCollide(collide)
     local char = LocalPlayer.Character
     if not char then return end
+    -- collide=true(복구)라도 전부 false: 정상 캐릭터 기본값이며 true는 지면 겹침 시 위로 튕김
     for _, p in ipairs(char:GetDescendants()) do
         if p:IsA("BasePart") then
             pcall(function()
-                if collide then
-                    p.CanCollide = (p.Name ~= "Head")
-                else
-                    p.CanCollide = false
-                end
+                p.CanCollide = false
             end)
         end
     end
@@ -7011,6 +7038,8 @@ pcall(function() Library:OnUnload(FullCleanup) end)
 
 local Tabs = {
     Main = Window:AddTab("Main", "user"),
+    Combat = Window:AddTab("Combat", "swords"),
+    Movement = Window:AddTab("Movement", "move"),
     Spoof = Window:AddTab("Spoof", "ghost"),
     World = Window:AddTab("World", "globe"),
     Updates = Window:AddTab("Updates", "bell"),
@@ -7084,6 +7113,11 @@ AimbotBox:AddToggle("RIV_Aimbot", {
     Text = T("에임봇", "Aimbot"),
     Default = Config.Aimbot.Enabled,
     Callback = function(v) Config.Aimbot.Enabled = v end,
+})
+AimbotBox:AddToggle("RIV_TeamCheck", {
+    Text = T("팀 체크 (적만)", "Team Check (enemies only)"),
+    Default = Config.Aimbot.TeamCheck,
+    Callback = function(v) Config.Aimbot.TeamCheck = v end,
 })
 AimbotBox:AddSlider("RIV_Strength", {
     Text = T("에임봇 강도", "Aimbot Strength"),
@@ -7166,7 +7200,7 @@ AimbotBox:AddToggle("RIV_AntiKatana", {
 })
 
 -- ---------- ESP (Kicia 원본 옵션 그대로: Box Style/Filled/HealthMode/Ammo/Tracer/HeadMarker/Chams/Skeleton) ----------
-local ESPBox = Tabs.Main:AddGroupbox({ Side = "Left", Name = T("ESP", "ESP"), IconName = "eye" })
+local ESPBox = Tabs.Main:AddGroupbox({ Side = "Right", Name = T("ESP", "ESP"), IconName = "eye" })
 ESPBox:AddToggle("RIV_ESP", { Text = "ESP", Default = Config.ESP.Enabled, Callback = function(v) Config.ESP.Enabled = v end })
 ESPBox:AddToggle("RIV_ESPBox", { Text = T("박스", "Box"), Default = Config.ESP.Boxes, Callback = function(v) Config.ESP.Boxes = v end })
 ESPBox:AddDropdown("RIV_ESPBoxStyle", {
@@ -7252,7 +7286,7 @@ ESPBox:AddSlider("RIV_TracerThick", {
 ESPBox:AddToggle("RIV_TracerOut", { Text = T("트레이서 외곽선", "Tracer Outline"), Default = Config.ESP.TracerOutline, Callback = function(v) Config.ESP.TracerOutline = v end })
 
 -- ---------- Movement ----------
-local MoveBox = Tabs.Main:AddGroupbox({ Side = "Right", Name = "Movement", IconName = "move" })
+local MoveBox = Tabs.Movement:AddGroupbox({ Side = "Left", Name = "Movement", IconName = "move" })
 MoveBox:AddToggle("RIV_Fly", {
     Text = T("플라이", "Fly"),
     Default = Config.Fly.Enabled,
@@ -7293,7 +7327,7 @@ MoveBox:AddToggle("RIV_InfJump", {
 })
 
 -- ---------- Rage ----------
-local RageBox = Tabs.Main:AddGroupbox({ Side = "Right", Name = "Rage", IconName = "zap" })
+local RageBox = Tabs.Combat:AddGroupbox({ Side = "Left", Name = "Rage", IconName = "zap" })
 RageBox:AddToggle("RIV_Ragebot", {
     Text = T("레이지 봇", "Rage Bot"),
     Default = S.ragebotOn,
@@ -7399,8 +7433,8 @@ RageBox:AddSlider("RIV_EvasionRadius", {
     Callback = function(v) S.evasionRadius = math.floor(v) end,
 })
 RageBox:AddLabel(T("Online: 오프라인 (kicia와 동일)", "Online: Offline (same as kicia)"), true)
--- ---------- TriggerBot (Main 탭 내 별도 분류) ----------
-local TrigBox = Tabs.Main:AddGroupbox({ Side = "Right", Name = "TriggerBot", IconName = "target" })
+-- ---------- TriggerBot (Combat 탭 내 별도 분류) ----------
+local TrigBox = Tabs.Combat:AddGroupbox({ Side = "Left", Name = "TriggerBot", IconName = "target" })
 TrigBox:AddToggle("RIV_TriggerBot", {
     Text = "Trigger Bot",
     Default = S.triggerBotOn,
@@ -7445,10 +7479,15 @@ TrigBox:AddSlider("RIV_TrigMaxD", {
     Min = 20, Max = 500, Rounding = 0,
     Callback = function(v) S.triggerMaxDist = math.floor(v) end,
 })
+TrigBox:AddToggle("RIV_TrigWall", {
+    Text = T("벽 체크", "Wall Check"),
+    Default = S.triggerWallCheck ~= false,
+    Callback = function(v) S.triggerWallCheck = v end,
+})
 
 -- ---------- Device Spoof ----------
 local _DS_Current = "Computer"
-local DSBox = Tabs.Main:AddGroupbox({ Side = "Right", Name = "Device Spoof", IconName = "smartphone" })
+local DSBox = Tabs.Spoof:AddGroupbox({ Side = "Right", Name = "Device Spoof", IconName = "smartphone" })
 DSBox:AddDropdown("RIV_Device", {
     Values = { "Computer", "Mobile", "Console", "VR" },
     Default = "Computer",
@@ -7486,7 +7525,7 @@ DSBox:AddButton({
 DSBox:AddLabel(T("장치: Computer (적용 안 함)", "Device: Computer (not applied)"), true, "RIV_DSStatus")
 
 -- ---------- Weapons (1n2ee) ----------
-local WpnBox = Tabs.Main:AddGroupbox({ Side = "Right", Name = "Weapons", IconName = "swords" })
+local WpnBox = Tabs.Combat:AddGroupbox({ Side = "Right", Name = "Weapons", IconName = "swords" })
 local _wpnMade = 0
 local function _wpnT(id, ko, en, key)
     local ok, err = pcall(function()
@@ -8457,6 +8496,11 @@ end
 do
 local UpBox = Tabs.Updates:AddGroupbox({ Side = "Left", Name = "Changelog", IconName = "bell" })
 local RIV_CHANGELOG = {
+    { v = "V0.9.4d", text = T("언로드/재실행 튕김 수정 — 충돌 복구를 CanCollide=false(정상 기본값)로 변경 + 속도 0. true로 두면 지면 겹침 시 위로 발사됨.", "Unload fling fix — restore CanCollide=false + zero velocity.") },
+    { v = "V0.9.4c", text = T("탭 정리 — Combat(레이지/트리거/무기)·Movement 탭 신설, Device Spoof는 Spoof로. Main은 에임봇/ESP만.", "Tab reorg — new Combat and Movement tabs, Device Spoof moved to Spoof.") },
+    { v = "V0.9.4b", text = T("트리거봇 벽 체크 — 가려진 적에게는 발사 안 함. 벽 체크 토글 추가.", "Triggerbot wall check — no fire at occluded enemies.") },
+    { v = "V0.9.4a", text = T("레이지 명중률 — HitboxHead 우선 + 중심 정조준 + 리졸버 차단 시 가공 스킵. 사일런트 FOV 메인루프 구동 + 상태에 FOV 표시.", "Rage accuracy via HitboxHead + center aim. Silent FOV driven by main loop.") },
+    { v = "V0.9.4", text = T("에임봇 팀 체크 — TeamID 우선 판정으로 적만 조준. 사일런트에도 팀 체크 추가 + 에임봇 팀체크 토글.", "Aimbot team check — TeamID-based enemies-only targeting, silent aim included.") },
     { v = "V0.9.3e", text = T("스카이박스 72종 — Kicia 전 프리셋 이식(Blizzard~Dawn). 기존 6종 포함, 중복 없음.", "72 skyboxes — all Kicia presets ported.") },
     { v = "V0.9.3d", text = T("연사 비율 상한 100→1000%. 1000%로 올리면 쿨다운 1/10로 풀오토 가속.", "Fire Rate cap 100 to 1000 percent for faster full-auto.") },
     { v = "V0.9.3c", text = T("언로드 재수정 — DisconnectAll pcall 처리 + Obsidian GUI 직접 제거 폴백. 중간 단계 실패해도 메뉴까지 확실히 닫힘.", "Unload fix v2 — pcall DisconnectAll + direct Obsidian GUI destroy fallback.") },
@@ -8739,6 +8783,23 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
     FOVOutline.Position = mouse
     FOVCircle.Visible = Config.Aimbot.Enabled and not MenuOpen
     FOVOutline.Visible = Config.Aimbot.Enabled and not MenuOpen
+
+    -- 사일런트 FOV (메인 루프에서 직접 구동)
+    do
+        local sc, so = env._silentFOVCircle, env._silentFOVOutline
+        local svis = S.silentAimOn and S.silentShowFOV
+        local sr = tonumber(S.silentAimFOV) or 350
+        if sc then
+            sc.Position = mouse
+            sc.Radius = sr
+            sc.Visible = svis
+        end
+        if so then
+            so.Position = mouse
+            so.Radius = sr
+            so.Visible = svis
+        end
+    end
 
     if Config.Walk.Enabled then
         local ch = LocalPlayer.Character
