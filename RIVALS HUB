@@ -1,4 +1,4 @@
--- RIVALS HUB V0.9.1 | Madium | Obsidian UI
+-- RIVALS HUB V0.9.3c | Madium | Obsidian UI
 -- RightShift = 창 열기/닫기, 에임봇 ON이면 상시 작동(홀드 불필요)
 
 if getgenv().RivalsAimESP_Loaded then
@@ -65,26 +65,67 @@ getgenv().RivalsObsidian = Library
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
-local HUB_VERSION = "V0.9.1"
+local HUB_VERSION = "V0.9.3c"
 
 -- ============ Language (체험 언어 자동: ko → 한국어, else English) ============
--- 우선순위: getgenv().RivalsLang 수동 지정("ko"/"en") > RobloxLocaleId 자동 감지 > 기본 한국어
+-- 우선순위: getgenv().RivalsLang > 파일(RivalsHub/lang.txt, 리조인 유지) > 플레이어 LocaleId > RobloxLocaleId > 기본 한국어
 local LANG_IS_KO = true
 local LANG_ID = ""
+local function _readLangFile()
+    local out = nil
+    pcall(function()
+        if type(isfile) == "function" and isfile("RivalsHub/lang.txt")
+            and type(readfile) == "function" then
+            local c = tostring(readfile("RivalsHub/lang.txt") or ""):lower():match("^%s*(.-)%s*$")
+            if c == "ko" or c == "en" then out = c end
+        end
+    end)
+    return out
+end
+getgenv().RivalsSaveLang = function(v)
+    if v == "ko" or v == "en" then
+        getgenv().RivalsLang = v
+        pcall(function()
+            if type(makefolder) == "function" then makefolder("RivalsHub") end
+            if type(writefile) == "function" then writefile("RivalsHub/lang.txt", v) end
+        end)
+    else
+        getgenv().RivalsLang = nil
+        pcall(function()
+            if type(delfile) == "function" and type(isfile) == "function" and isfile("RivalsHub/lang.txt") then
+                delfile("RivalsHub/lang.txt")
+            end
+        end)
+    end
+end
+getgenv().RivalsEffLang = function()
+    if getgenv().RivalsLang == "ko" or getgenv().RivalsLang == "en" then
+        return getgenv().RivalsLang
+    end
+    return _readLangFile()
+end
 do
-    local forced = getgenv().RivalsLang
+    local forced = getgenv().RivalsEffLang()
     if forced == "ko" then
         LANG_IS_KO = true
-        LANG_ID = "forced-ko"
+        LANG_ID = "saved-ko"
     elseif forced == "en" then
         LANG_IS_KO = false
-        LANG_ID = "forced-en"
+        LANG_ID = "saved-en"
     else
         pcall(function()
-            local LS = cloneref(game:GetService("LocalizationService"))
             local id = ""
-            pcall(function() id = tostring(LS.RobloxLocaleId or "") end)
-            if id == "" or id == "nil" then
+            -- 1순위: 플레이어 로케일 (체험 언어와 가장 직결)
+            pcall(function()
+                local loc = LocalPlayer and LocalPlayer.LocaleId
+                if type(loc) == "string" and loc ~= "" then id = loc end
+            end)
+            local LS = nil
+            pcall(function() LS = cloneref(game:GetService("LocalizationService")) end)
+            if id == "" and LS then
+                pcall(function() id = tostring(LS.RobloxLocaleId or "") end)
+            end
+            if (id == "" or id == "nil") and LS then
                 pcall(function() id = tostring(LS.SystemLocaleId or "") end)
             end
             id = string.lower(tostring(id or "")):gsub("_", "-")
@@ -185,11 +226,17 @@ local S = {
     silentAimTargetMode = "Players", silentAimHitPart = "Head", silentShowFOV = true, antiKatanaOn = false,
     ragebotOn = false, ragebotStability = 0.15, ragebotShootFrames = 1, ragebotResolver = false,
     ragebotEvasion = "Off", evasionRadius = 8, ragebotFireRate = 0.0005, ragebotWeaponSlot = "Melee",
+    rageSlotEnabled = { Primary = true, Secondary = true, Melee = true },
+    rageSlotOrder = { "Primary", "Secondary", "Melee" },
     auraOn = false, triggerBotOn = false, wallbangOn = false,
+    triggerReactionMs = 100, triggerReactionOffsetMs = 0, triggerForgetSec = 0.5,
+    triggerShootDelayMs = 0, triggerMaxDist = 500,
     godModeOn = false, orbitOn = false, voidSpanOn = false, infiniteJumpOn = false,
     forceThirdPersonOn = false, teleporterOn = false, lastTeleportTick = 0, teleportDistance = 50000,
     walkSpeed = 16, fightSpeed = 50, showKeybindsOn = true, showWatermarkOn = true,
     autoLoad = false,
+    wNoSpread = false, wFastShoot = false, wFastProjectile = false,
+    wFullAuto = false, wBackstab = false, wFireRate = 100,
     espEnemyName = true, espEnemyDistance = false, espEnemyRank = false, espEnemyWinstreak = false,
     espEnemyHealth = true, espNumberEnemy = false, espHeldWeapon = false, espEnemyDeflecting = false,
     espGeometry = false, espEnemyBox = true,
@@ -237,7 +284,7 @@ end
 local _evasionAnchor = nil
 local _evasionLast = 0
 local function EvasionStep()
-    if S.ragebotEvasion == "Off" or not S.ragebotOn or MenuOpen then return end
+    if S.ragebotEvasion == "Off" or not S.ragebotOn or MenuOpen or IsPickWeaponsOpen() then return end
     local now = os.clock()
     if now - _evasionLast < 0.3 then return end
     _evasionLast = now
@@ -304,12 +351,146 @@ local function getBestTarget(fovLimit)
     return bestTarget
 end
 
+-- 실행기 입력 함수 확보 (클릭/이동; 없으면 레이지/트리거 발사 불가 — 로드 시 1회 진단)
+do
+    local click, move = nil, nil
+    pcall(function()
+        if type(mouse1click) == "function" then
+            click = mouse1click
+        elseif type(mouse1press) == "function" and type(mouse1release) == "function" then
+            click = function()
+                mouse1press()
+                task.wait(0.02)
+                pcall(mouse1release)
+            end
+        end
+        if type(mousemoverel) == "function" then move = mousemoverel end
+    end)
+    env._clickFn = click
+    env._moveFn = move
+    if click == nil then warn("[RivalsHub] click function missing — Ragebot/TriggerBot cannot fire") end
+    if move == nil then warn("[RivalsHub] mousemoverel missing — aim snap disabled") end
+end
+
+-- PickWeapons 선택창 실시간 감지 (열려 있는 동안 자동 동작 일시정지용)
+-- 참조 캐시 + 1초마다 재탐색: 매 프레임 검사는 Visible만이라 가벼움
+local _pickGui, _pickScanT = nil, 0
+local function IsPickWeaponsOpen()
+    local now = os.clock()
+    if now - _pickScanT > 1 then
+        _pickScanT = now
+        pcall(function()
+            _pickGui = nil
+            local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+            if pg then
+                for _, d in ipairs(pg:GetDescendants()) do
+                    if d.Name == "PickWeapons" and d:IsA("GuiObject") then
+                        _pickGui = d
+                        break
+                    end
+                end
+            end
+        end)
+    end
+    local ok, vis = pcall(function() return _pickGui and _pickGui.Visible end)
+    return ok and vis == true
+end
+
 -- ============ Ragebot Engine (provided code) ============
 local _rageSlots = { Primary = 1, Secondary = 2, Melee = 3 }
+local RAGE_ROT = { order = { "Primary", "Secondary", "Melee" }, idx = 0, last = 0 }
 local _rageMods = nil
 local _rageDeflecting = {}
 local _rageLastFire = 0
 local _rageLastEquip = 0
+-- 진단 카운터: Targets=조준 대상 포착 수, Fired=발사 수
+local RAGE_D = { targets = 0, shots = 0, t = 0 }
+env._rageTargets, env._rageShots = 0, 0
+env._rageStage = "Idle"
+local function _rageStatusTick(force)
+    local now = os.clock()
+    if not force and now - RAGE_D.t < 1 then return end
+    RAGE_D.t = now
+    pcall(function()
+        Options.RIV_RageStatus:SetText(string.format("Rage: %s | Targets %d | Fired %d | %s",
+            S.ragebotOn and "ON" or "OFF", RAGE_D.targets, RAGE_D.shots, tostring(env._rageStage or "")))
+    end)
+end
+
+-- ============ Kicia Ragebot 상수 (jD gun Plan의 tbl18/19/20/21/22 그대로) ============
+local K_RAGE = {
+    A = { [utf8.char(0)] = -9e37, [utf8.char(1)] = 0, [utf8.char(2)] = 0, [utf8.char(3)] = -1.5707963267948966, [utf8.char(4)] = 3.1415926535897931, [utf8.char(5)] = 3.1415926535897931 },
+    B = { [utf8.char(0)] = 0, [utf8.char(1)] = -90000000, [utf8.char(2)] = 0, [utf8.char(3)] = -1.5707963267948966, [utf8.char(4)] = 3.1415926535897931, [utf8.char(5)] = 3.1415926535897931 },
+    AB = { [utf8.char(0)] = -9e37, [utf8.char(1)] = 0, [utf8.char(2)] = 0, [utf8.char(3)] = 1.5707963267948966, [utf8.char(4)] = 3.1415926535897931, [utf8.char(5)] = 3.1415926535897931 },
+    BB = { [utf8.char(0)] = 0, [utf8.char(1)] = 90000000, [utf8.char(2)] = 0, [utf8.char(3)] = 1.5707963267948966, [utf8.char(4)] = 3.1415926535897931, [utf8.char(5)] = 3.1415926535897931 },
+    C = { [utf8.char(0)] = 0, [utf8.char(1)] = 1, [utf8.char(2)] = 0, [utf8.char(3)] = 0, [utf8.char(4)] = 0, [utf8.char(5)] = 0 },
+    useItem = nil,
+}
+local function rageGetUseItem()
+    if K_RAGE.useItem then return K_RAGE.useItem end
+    pcall(function()
+        local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+        local rep = remotes and remotes:FindFirstChild("Replication")
+        local fg = rep and rep:FindFirstChild("Fighter")
+        local ui = fg and fg:FindFirstChild("UseItem")
+        if ui and ui:IsA("RemoteEvent") then K_RAGE.useItem = ui end
+    end)
+    return K_RAGE.useItem
+end
+-- 장착 총기 + ObjectId + 플래그 (Kicia: FC.Objects에서 내 파이터 → ItemObserver:EquippedItemAsGun() → .ObjectId)
+local function rageGetGun(M)
+    local item = nil
+    pcall(function()
+        local objs = M.FC and M.FC.Objects
+        if type(objs) == "table" then
+            for _, fo in pairs(objs) do
+                local ok, plr = pcall(function() return fo.Player end)
+                if ok and plr == LocalPlayer then
+                    local io = fo.ItemObserver
+                    if io ~= nil then
+                        if type(io.EquippedItemAsGun) == "function" then
+                            local okG, g = pcall(function() return io:EquippedItemAsGun() end)
+                            if okG and g ~= nil then item = g end
+                        end
+                        if item == nil and type(io.EquippedItem) == "function" then
+                            local okE, e = pcall(function() return io:EquippedItem() end)
+                            if okE and e ~= nil then item = e end
+                        end
+                    end
+                    break
+                end
+            end
+        end
+    end)
+    if item == nil then
+        -- 폴백: 기존 LocalFighter 경로
+        pcall(function()
+            if M.FC and M.FC.LocalFighter then item = M.FC.LocalFighter.EquippedItem end
+        end)
+    end
+    if item == nil then return nil end
+    local oid = nil
+    pcall(function() oid = item.ObjectId end)
+    if oid == nil then pcall(function() oid = item.ObjectID end) end
+    if oid == nil then pcall(function()
+        if type(item.Get) == "function" then oid = item:Get("ObjectID") end
+    end) end
+    if oid == nil then return nil end
+    local fan, ray = nil, nil
+    pcall(function()
+        if type(item.IsFanFired) == "function" then fan = item:IsFanFired() or nil end
+    end)
+    pcall(function() ray = item.IsRaycast end)
+    return item, oid, fan, ray
+end
+local function rageStartEnum(M)
+    local e = nil
+    pcall(function() e = M.EL:ToEnum("StartShooting") end)
+    if e == nil then pcall(function()
+        if type(M.EL.encode) == "function" then e = M.EL.encode("StartShooting") end
+    end) end
+    return e
+end
 
 local function rageModules()
     if _rageMods ~= nil then
@@ -326,13 +507,9 @@ local function rageModules()
         local ct = ps and ps:FindFirstChild("Controllers")
         local fm = ct and ct:FindFirstChild("FighterController")
         if fm then M.FC = require(fm) end
-        local sm = ct and (ct:FindFirstChild("SpectateController") or ct:WaitForChild("SpectateController", 3))
-        if sm then
-            local okS, sc = pcall(require, sm)
-            if okS then M.SC = sc end
-        end
     end)
-    if M.U and M.EL and M.FC then
+    -- Kicia식 발사에 필요한 건 EnumLibrary + FighterController뿐 (Utility 불필요, Spectate 대기 제거)
+    if M.EL and M.FC then
         _rageMods = M
         return M
     end
@@ -458,13 +635,34 @@ end
 
 local function rageAutoEquip(M)
     if not M or not M.FC then return end
+    -- 켜진 슬롯만 지정 순서대로 순환 (탄 없음이면 즉시 다음)
+    local order = {}
+    local seen = {}
+    local src = (type(S.rageSlotOrder) == "table" and #S.rageSlotOrder > 0) and S.rageSlotOrder or RAGE_ROT.order
+    for _, name in ipairs(src) do
+        if (name == "Primary" or name == "Secondary" or name == "Melee") and not seen[name] then
+            seen[name] = true
+            local en = S.rageSlotEnabled and S.rageSlotEnabled[name]
+            if en ~= false then table.insert(order, name) end
+        end
+    end
+    if #order == 0 then return end
     local now = os.clock()
-    if now - _rageLastEquip < 1 then return end
-    _rageLastEquip = now
-    local slot = _rageSlots[S.ragebotWeaponSlot] or 3
+    local ammoEmpty = false
+    pcall(function()
+        local item = rageGetGun(M)
+        if item and type(item.GetAmmo) == "function" then
+            local a = item:GetAmmo()
+            if type(a) == "number" and a <= 0 then ammoEmpty = true end
+        end
+    end)
+    if not ammoEmpty and now - RAGE_ROT.last < 4 then return end
+    RAGE_ROT.idx = (RAGE_ROT.idx % #order) + 1
+    RAGE_ROT.last = now
+    local slot = _rageSlots[order[RAGE_ROT.idx]] or 3
     pcall(function()
         local lf = M.FC.LocalFighter
-        if lf then lf:EquipItem(slot) end
+        if lf and type(lf.EquipItem) == "function" then lf:EquipItem(slot) end
     end)
 end
 
@@ -478,7 +676,118 @@ task.spawn(function()
     end
 end)
 
-local function RagebotStep()
+-- ============ Ragebot (AntiEnhancement Controller 사용; Kicia 직접발사는 아래 비활성) ============
+if false then -- RAGE-KICIA-OFF-START
+local _rageCurTarget, _rageStableAt = nil, 0
+local function RagebotStep_KICIA_DISABLED()
+    if not S.ragebotOn or MenuOpen then return end
+    local now = os.clock()
+    local target = getBestTarget(Config.Aimbot.FOV)
+    if not target then
+        _rageCurTarget = nil
+        env._rageStage = "NoTarget"
+        return
+    end
+    RAGE_D.targets += 1
+    env._rageTargets = RAGE_D.targets
+    local ch = target.Parent
+    if ch then
+        local skip = false
+        pcall(function()
+            local plr = Players:GetPlayerFromCharacter(ch)
+            if plr and LocalPlayer.Team and plr.Team and LocalPlayer.Team == plr.Team then
+                skip = true
+            end
+        end)
+        if skip then env._rageStage = "Teammate" return end
+        if not ResolveShotSafe(ch) then env._rageStage = "Blocked" return end
+    end
+    -- HitboxHead 우선 (Kicia AliveState.HitboxHead)
+    local head = ch and (ch:FindFirstChild("HitboxHead") or ch:FindFirstChild("Head")) or target
+    if not head or not head:IsA("BasePart") then env._rageStage = "NoHead" return end
+    local myChar = LocalPlayer.Character
+    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not myRoot then env._rageStage = "NoSelf" return end
+    -- 타깃 교체 시 Stability 대기 (Kicia SpatialLimitGate)
+    if _rageCurTarget ~= ch then
+        _rageCurTarget = ch
+        _rageStableAt = now + (tonumber(S.ragebotStability) or 0.15)
+    end
+    -- desync: 타깃 위/뒤로 순간이동 후 복구 (Kicia Plan의 n + __restore)
+    local isKnife = false
+    pcall(function()
+        local tool = ch:FindFirstChildOfClass("Tool")
+        if tool and string.find(string.lower(tool.Name), "knife", 1, true) then isKnife = true end
+    end)
+    local oldCF, oldVel, oldRotVel = myRoot.CFrame, myRoot.Velocity, myRoot.RotVelocity
+    pcall(function()
+        local tRoot = ch:FindFirstChild("HumanoidRootPart")
+        local base = (tRoot and tRoot.CFrame or head.CFrame)
+        myRoot.CFrame = base * (isKnife and CFrame.new(0, 6, 0) or CFrame.new(0, 1, 2))
+        pcall(function() RunService:UnbindFromRenderStep("__restore") end)
+        RunService:BindToRenderStep("__restore", 101, function()
+            if myRoot then
+                myRoot.CFrame = oldCF
+                myRoot.Velocity = oldVel
+                myRoot.RotVelocity = oldRotVel
+            end
+            RunService:UnbindFromRenderStep("__restore")
+        end)
+    end)
+    if now < _rageStableAt then env._rageStage = "Stabilizing" return end
+    local fr = math.max(tonumber(S.ragebotFireRate) or 0.05, 0.03)
+    if now - _rageLastFire < fr * math.max(tonumber(S.ragebotShootFrames) or 1, 1) then
+        env._rageStage = "Cooling"
+        return
+    end
+    -- 나이프/근접은 HeavyAttack 인코딩을 모르므로 클릭 폴백
+    if isKnife then
+        local click = env._clickFn
+        if click == nil then env._rageStage = "MeleeNoClick" return end
+        _rageLastFire = now
+        RAGE_D.shots += 1
+        env._rageShots = RAGE_D.shots
+        env._rageStage = "MeleeClick"
+        _rageStatusTick(false)
+        pcall(click)
+        return
+    end
+    local M = rageModules()
+    if not M then env._rageStage = "NoMod" return end
+    local item, oid, fan, ray = rageGetGun(M)
+    if not item then env._rageStage = "NoItem" return end
+    local startShoot = rageStartEnum(M)
+    if startShoot == nil then env._rageStage = "NoEnum" return end
+    local useItem = rageGetUseItem()
+    if not useItem then env._rageStage = "NoRemote" return end
+    -- Kicia ShootEncoded 그대로: data + raycast 플래그
+    local below = (myRoot.Position.Y - head.Position.Y) > 3
+    local data = {
+        [utf8.char(0)] = below and K_RAGE.AB or K_RAGE.A,
+        [utf8.char(1)] = below and K_RAGE.BB or K_RAGE.B,
+        [utf8.char(2)] = head,
+        [utf8.char(3)] = K_RAGE.C,
+        [utf8.char(4)] = fan,
+    }
+    local payload = { [utf8.char(1)] = data }
+    if ray ~= false then payload[utf8.char(2)] = true end
+    local okFire = pcall(function()
+        useItem:FireServer(oid, startShoot, payload, nil)
+    end)
+    if okFire then
+        _rageLastFire = now
+        RAGE_D.shots += 1
+        env._rageShots = RAGE_D.shots
+        env._rageStage = "Fired"
+        _rageStatusTick(false)
+    else
+        env._rageStage = "FireErr"
+    end
+end
+end -- RAGE-KICIA-OFF-END
+
+if false then -- RAGE-DIRECT-OFF-START (초기 심플 버전으로 교체, 아래 직접발사 엔진 비활성)
+local function RagebotStep_DIRECT_DISABLED()
     if not S.ragebotOn or MenuOpen then return end
     local M = rageModules()
     if not M then return end
@@ -551,6 +860,7 @@ local function RagebotStep()
         )
     end)
 end
+end -- RAGE-DIRECT-OFF-END
 
 -- ============ Rage Bot Full Module ============
 local _killDesyncActive = false
@@ -563,11 +873,20 @@ local function countAliveEnemies()
     pcall(function()
         local LP = Players.LocalPlayer
         for _, plr in ipairs(Players:GetPlayers()) do
-            if plr ~= LocalPlayer then
-                local char = plr.Character
-                local hum = char and char:FindFirstChildOfClass("Humanoid")
-                if hum and hum.Health > 0 then
-                    count = count + 1
+            if plr ~= LP then
+                -- AntiEnhancement식 팀 판정 (팀전이면 아군 제외)
+                local sameTeam = false
+                if LP:GetAttribute("TeamID") and plr:GetAttribute("TeamID") then
+                    sameTeam = (LP:GetAttribute("TeamID") == plr:GetAttribute("TeamID"))
+                elseif LP.Team and plr.Team then
+                    sameTeam = (LP.Team == plr.Team)
+                end
+                if not sameTeam then
+                    local char = plr.Character
+                    local hum = char and char:FindFirstChildOfClass("Humanoid")
+                    if hum and hum.Health > 0 then
+                        count = count + 1
+                    end
                 end
             end
         end
@@ -677,7 +996,7 @@ local function StartUserRagebot()
     local GunModule, UtilityModule
     pcall(function() GunModule = require(PlayerScripts.Modules.ItemTypes.Gun) end)
     pcall(function() UtilityModule = require(_ReplicatedStorage.Modules.Utility) end)
-    if not GunModule or not UtilityModule then warn("[Anti-rival] Ragebot modules not found"); return end
+    if not GunModule or not UtilityModule then warn("[Anti-rival] Ragebot modules not found"); return false end
     local CharHelper = setmetatable({}, {
         __index = function(_, key)
             local char = _LP.Character
@@ -759,6 +1078,10 @@ local function StartUserRagebot()
             data[utf8.char(3)] = UtilityModule:EncodeCFrame(offset)
             local frames = tonumber(env._ragebotShootFrames) or tonumber(S.ragebotShootFrames) or 1
             self.__task1 = task.delay(0.05 * math.clamp(frames, 1, 10), function() self:__desync_stop() end)
+            RAGE_D.shots += 1
+            env._rageShots = RAGE_D.shots
+            env._rageStage = "Fired"
+            pcall(_rageStatusTick, false)
             return unpack(results)
         end
     end
@@ -781,6 +1104,13 @@ local function StartUserRagebot()
             local dist = (myRoot.Position - root.Position).Magnitude
             if dist > MAX_DISTANCE then continue end
             if dist < closestDist then closestDist = dist; closest = plr end
+        end
+        if self.__counted ~= closest then
+            self.__counted = closest
+            if closest then
+                RAGE_D.targets += 1
+                env._rageTargets = RAGE_D.targets
+            end
         end
         return closest
     end
@@ -824,17 +1154,22 @@ local function StartUserRagebot()
     end
     Controller:__init()
     print("[Anti-rival] User Desync Ragebot STARTED")
+    env._rageStage = "Controller"
+    pcall(_rageStatusTick, true)
+    return true
 end
 
 local function StopUserRagebot()
     local g = getgenv()
     if g and g.__s9t0u1 then pcall(function() g.__s9t0u1:Shutdown() end); g.__s9t0u1 = nil end
     StopKillDesync()
+    env._rageStage = "Off"
+    pcall(_rageStatusTick, true)
     print("[Anti-rival] User Desync Ragebot STOPPED")
 end
 
 env._riv_startRagebot = function(on)
-    if on then StartUserRagebot() else StopUserRagebot() end
+    if on then return StartUserRagebot() else StopUserRagebot() end
 end
 
 -- ============ Device Spoof Module ============
@@ -2142,10 +2477,20 @@ end -- SKIN-OFF-END
 
 -- ============ Silent Aim (Harion 원본) ============
 -- 카메라를 움직이지 않고 발사 데이터를 타겟 쪽으로 교체
-local _saUtil, _saEnums = nil, nil
-local _saOldFireServer = nil
-local _saHookInstalled = false
-local _saTargetPart = nil
+local SA_MOD = { u = nil, e = nil }
+local SA_H = { old = nil, installed = false, part = nil }
+-- 진단 카운터: Seen=후킹이 본 UseItem 호출 수, Redirected=타겟으로 꺾은 수
+local SA_D = { shots = 0, hits = 0, t = 0 }
+env._saShots, env._saHits = 0, 0
+local function _saStatusTick(force)
+    local now = os.clock()
+    if not force and now - SA_D.t < 1 then return end
+    SA_D.t = now
+    pcall(function()
+        Options.RIV_SilentStatus:SetText(string.format("Silent: %s | Seen %d | Redirected %d",
+            SA_H.installed and "Hooked" or "Waiting", SA_D.shots, SA_D.hits))
+    end)
+end
 
 function _playerHoldingKatana(plr)
     if not plr or not plr.Character then return false end
@@ -2199,13 +2544,13 @@ local function saGetTarget()
             end
         end
     end
-    _saTargetPart = bestPart
+    SA_H.part = bestPart
     env._silentAimTarget = bestPart
     return bestChar, bestPart
 end
 
 local function saEnsureModules()
-    if _saUtil and _saEnums then return true end
+    if SA_MOD.u and SA_MOD.e then return true end
     local modules = ReplicatedStorage:FindFirstChild("Modules")
     if not modules then return false end
     local u = modules:FindFirstChild("Utility")
@@ -2213,9 +2558,9 @@ local function saEnsureModules()
     if not u or not e then return false end
     local okU, util = pcall(require, u)
     local okE, enums = pcall(require, e)
-    if okU then _saUtil = util end
-    if okE then _saEnums = enums end
-    return _saUtil ~= nil and _saEnums ~= nil
+    if okU then SA_MOD.u = util end
+    if okE then SA_MOD.e = enums end
+    return SA_MOD.u ~= nil and SA_MOD.e ~= nil
 end
 
 local function saGetUseItemRemote()
@@ -2233,7 +2578,7 @@ local function saGetUseItemRemote()
 end
 
 local function buildManipulationCameraData(fromPos, part)
-    if not _saUtil or not part then return nil end
+    if not SA_MOD.u or not part then return nil end
     local aimPosition = part.Position
     pcall(function()
         local vel = part.AssemblyLinearVelocity or part.Velocity
@@ -2245,38 +2590,53 @@ local function buildManipulationCameraData(fromPos, part)
     local look = CFrame.new(fromPos, aimPosition)
     local data = {}
     data[utf8.char(1)] = {
-        [utf8.char(0)] = _saUtil:EncodeCFrame(look),
-        [utf8.char(1)] = _saUtil:EncodeCFrame(look),
+        [utf8.char(0)] = SA_MOD.u:EncodeCFrame(look),
+        [utf8.char(1)] = SA_MOD.u:EncodeCFrame(look),
         [utf8.char(2)] = part,
-        [utf8.char(3)] = _saUtil:EncodeCFrame(part.CFrame:ToObjectSpace(CFrame.new(aimPosition))),
+        [utf8.char(3)] = SA_MOD.u:EncodeCFrame(part.CFrame:ToObjectSpace(CFrame.new(aimPosition))),
     }
     return data
 end
 
 local function saInstallHook()
-    if _saHookInstalled then return true end
+    if SA_H.installed then return true end
     if not saEnsureModules() then return false end
     local useItem = saGetUseItemRemote()
     if not useItem then return false end
     if type(hookfunction) ~= "function" then return false end
     local startShoot = nil
     pcall(function()
-        startShoot = _saEnums:ToEnum("StartShooting")
+        startShoot = SA_MOD.e:ToEnum("StartShooting")
     end)
+    -- enum 직접비교 + 문자열 폴백 (ToEnum 실패/타입 불일치 대비)
+    local function isStartShooting(action)
+        if startShoot ~= nil and action == startShoot then return true end
+        local ok, s = pcall(tostring, action)
+        if ok and type(s) == "string" then
+            if s == "StartShooting" or string.find(s, "StartShooting", 1, true) then return true end
+        end
+        return false
+    end
     local ok, err = pcall(function()
         local old
         local fn = function(self, obj, action, cameradata, ...)
-            if S.silentAimOn and not MenuOpen and action == startShoot then
+            SA_D.shots += 1
+            env._saShots = SA_D.shots
+            if S.silentAimOn and not MenuOpen and isStartShooting(action) then
                 local target, part = saGetTarget()
                 if target and part and target:FindFirstChild("HumanoidRootPart") then
                     local cam = Workspace.CurrentCamera
                     local fromPos = (cam and cam.CFrame.Position) or part.Position
                     local newData = buildManipulationCameraData(fromPos, part)
                     if newData then
+                        SA_D.hits += 1
+                        env._saHits = SA_D.hits
+                        _saStatusTick(false)
                         return old(self, obj, action, newData, ...)
                     end
                 end
             end
+            if SA_D.shots % 20 == 0 then _saStatusTick(false) end
             return old(self, obj, action, cameradata, ...)
         end
         if type(newcclosure) == "function" then
@@ -2284,33 +2644,36 @@ local function saInstallHook()
             if okcc and cc then fn = cc end
         end
         old = hookfunction(useItem.FireServer, fn)
-        _saOldFireServer = old
+        SA_H.old = old
         regRestore(function()
             pcall(function() hookfunction(useItem.FireServer, old) end)
         end)
     end)
     if ok then
-        _saHookInstalled = true
+        SA_H.installed = true
+        _saStatusTick(true)
         return true
     end
     warn("[Silent Aim] hook failed:", err)
+    _saStatusTick(true)
     return false
 end
 
+-- 설치 재시도 영속화 (로비에서 실행 후 매치 입장해도 5초마다 재시도, 언로드 시 종료)
 task.spawn(function()
-    for _ = 1, 60 do
+    while not getgenv().RivalsHubDead do
         if saInstallHook() then
             print("[Silent Aim] hooked (UseItem.FireServer)")
             return
         end
-        task.wait(1)
+        task.wait(5)
     end
-    warn("[Silent Aim] join match then toggle ON")
 end)
 
 env._silentAimRehook = function()
-    if _saHookInstalled then
+    if SA_H.installed then
         print("[Silent Aim] already hooked")
+        _saStatusTick(true)
         return
     end
     if saInstallHook() then
@@ -2318,6 +2681,7 @@ env._silentAimRehook = function()
     else
         warn("[Silent Aim] modules/remote missing — join match")
     end
+    _saStatusTick(true)
 end
 
 -- ============ Silent Aim FOV Circle (Harion용 독립 렌더러: 마우스 중심) ============
@@ -2351,6 +2715,9 @@ do
     end)
     env._silentFOVCircle = saFovCircle
     env._silentFOVOutline = saFovOutline
+    if saFovCircle == nil then
+        warn("[RivalsHub] Silent FOV: Drawing unavailable — circle disabled")
+    end
     if saFovCircle then
         local okConn, conn = pcall(function()
             return RunService.RenderStepped:Connect(function()
@@ -2584,26 +2951,397 @@ task.spawn(function()
 end)
 end -- SILENT-V2-OFF-END
 
+-- ============ Weapons (1n2ee engine: no spread / fastshoot / fast projectile / full auto / always backstab) ============
+-- 청크 local은 WPN_API 1개만 사용, 나머지는 do 스코프 (레지스터 한도 대응)
+local WPN_API
+do
+    local weaponState = getgenv().RivalsWeapons
+    if weaponState and weaponState.Restore then pcall(weaponState.Restore) end
+    weaponState = {
+        Enabled = false, Installed = false,
+        NoSpread = false, FastShoot = false, FastProjectile = false,
+        FullAuto = false, AlwaysBackstab = false, FireRate = 100,
+        InfoCache = setmetatable({}, { __mode = "k" }),
+        ProjectileReloadCache = setmetatable({}, { __mode = "k" }),
+        FullAutoItems = setmetatable({}, { __mode = "k" }),
+        Connections = {},
+    }
+    getgenv().RivalsWeapons = weaponState
+
+    local function stopBackstabCameraLoop(loopId)
+        if _G.CurrentCameraLoopID == loopId then
+            _G.CurrentCameraLoopID = (_G.CurrentCameraLoopID or 0) + 1
+        end
+    end
+    local function startBackstabCameraLoop(duration)
+        if not weaponState.Utility or not weaponState.CameraController or not weaponState.UpdateCameraRotation then return end
+        _G.CurrentCameraLoopID = (_G.CurrentCameraLoopID or 0) + 1
+        local myLoopID = _G.CurrentCameraLoopID
+        local targetPitch = math.rad(0)
+        local sideAngle = math.rad(180)
+        task.spawn(function()
+            while _G.CurrentCameraLoopID == myLoopID
+                and weaponState.Enabled
+                and weaponState.AlwaysBackstab do
+                local yaw = weaponState.CameraController.Rotation and weaponState.CameraController.Rotation.Y or 0
+                local cameraRotation = Vector2.new(targetPitch, yaw + sideAngle)
+                local encodedRotation = weaponState.Utility:EncodeCameraRotation(cameraRotation)
+                weaponState.UpdateCameraRotation:FireServer(encodedRotation, nil)
+                task.wait()
+            end
+        end)
+        task.delay(duration or 0.35, function() stopBackstabCameraLoop(myLoopID) end)
+    end
+    local function hasInfoOptions()
+        return weaponState.FastShoot or weaponState.FireRate ~= 100
+    end
+    local function rememberInfo(info, key)
+        if type(info) ~= "table" or info[key] == nil then return nil end
+        local cache = weaponState.InfoCache[info]
+        if not cache then
+            cache = {}
+            weaponState.InfoCache[info] = cache
+        end
+        if cache[key] == nil then
+            cache[key] = info[key]
+        end
+        return cache[key]
+    end
+    local function applyInfoOptions(item)
+        local info = item and item.Info
+        if type(info) ~= "table" then return end
+        local fireRate = math.max((weaponState.FireRate or 100) / 100, 0.01)
+        local fastShoot = weaponState.Enabled and weaponState.FastShoot
+        local recoil = rememberInfo(info, "ShootRecoil")
+        if recoil ~= nil then info.ShootRecoil = fastShoot and 0 or recoil end
+        local spread = rememberInfo(info, "ShootSpread")
+        if spread ~= nil then info.ShootSpread = fastShoot and 0 or spread end
+        local projectileSpeed = rememberInfo(info, "ProjectileSpeed")
+        if projectileSpeed ~= nil and fastShoot then
+            info.ProjectileSpeed = 99999999
+        elseif projectileSpeed ~= nil then
+            info.ProjectileSpeed = projectileSpeed
+        end
+        for _, key in ipairs({
+            "ShootCooldown", "QuickShotCooldown", "SpinCooldown", "DashCooldown",
+            "Cooldown", "BuildCooldown", "AttackCooldown", "HeavyAttackCooldown", "BurstCooldown",
+        }) do
+            local original = rememberInfo(info, key)
+            if original ~= nil then
+                if fastShoot then
+                    info[key] = 0
+                elseif fireRate ~= 1 and (key == "ShootCooldown" or key == "QuickShotCooldown" or key == "BurstCooldown" or key == "AttackCooldown") then
+                    info[key] = original / fireRate
+                else
+                    info[key] = original
+                end
+            end
+        end
+    end
+    local function refreshCachedInfo()
+        for info in pairs(weaponState.InfoCache) do
+            applyInfoOptions({ Info = info })
+        end
+    end
+    local function restoreInfo()
+        for info, values in pairs(weaponState.InfoCache) do
+            if type(info) == "table" then
+                for key, value in pairs(values) do
+                    pcall(function() info[key] = value end)
+                end
+            end
+        end
+    end
+    local function restoreFastProjectile()
+        for item, reloadLength in pairs(weaponState.ProjectileReloadCache) do
+            if type(item) == "table" then
+                pcall(rawset, item, "ReloadLength", reloadLength)
+            end
+        end
+    end
+    local function applyFastProjectile()
+        if not (weaponState.Enabled and weaponState.FastProjectile) then
+            restoreFastProjectile()
+            return
+        end
+        pcall(function()
+            local ItemLibrary = require(ReplicatedStorage.Modules.ItemLibrary)
+            local Items = rawget(ItemLibrary, "Items")
+            if not Items then return end
+            local whitelistedItems = { "Bow", "Daggers", "Slingshot" }
+            for _, item in Items do
+                local name = item.Name
+                if table.find(whitelistedItems, name) and rawget(item, "ReloadLength") ~= nil then
+                    if weaponState.ProjectileReloadCache[item] == nil then
+                        weaponState.ProjectileReloadCache[item] = rawget(item, "ReloadLength")
+                    end
+                    rawset(item, "ReloadLength", name == "Daggers" and 0.09 or 0)
+                end
+            end
+        end)
+    end
+    local function isLocalItem(item)
+        local fighter = item and item.ClientFighter
+        if not fighter then return false end
+        if fighter.IsLocalPlayer == true then return true end
+        return fighter.Player == LocalPlayer
+    end
+    local function getFullAutoDelay(item)
+        local remaining = type(item._shoot_cooldown) == "number"
+            and math.max(item._shoot_cooldown - tick(), 0)
+            or 0
+        if remaining > 0 then
+            return math.clamp(remaining, 0.01, 1)
+        end
+        local info = item.Info
+        local cooldown = info and tonumber(info.ShootCooldown) or 0
+        if info and tonumber(info.BurstCount) and info.BurstCount > 1 then
+            cooldown = tonumber(info.BurstCooldown) or cooldown
+        end
+        return math.clamp(cooldown > 0 and cooldown or (1 / 60), 1 / 60, 1)
+    end
+    local function startFullAuto(item, input)
+        if weaponState.FullAutoItems[item] then return end
+        weaponState.FullAutoItems[item] = true
+        task.spawn(function()
+            while weaponState.Enabled
+                and weaponState.FullAuto
+                and item
+                and isLocalItem(item)
+                and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) do
+                task.wait(getFullAutoDelay(item))
+                if not (weaponState.Enabled
+                    and weaponState.FullAuto
+                    and isLocalItem(item)
+                    and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)) then
+                    break
+                end
+                pcall(function() weaponState.OriginalInput(item, input) end)
+            end
+            weaponState.FullAutoItems[item] = nil
+        end)
+    end
+    local function installWeaponHooks()
+        if weaponState.Installed then return end
+        -- 각 require는 개별 pcall (로비 등 모듈 부재 시 부분 설치, 다음 sync 때 재시도)
+        pcall(function()
+            local ps = LocalPlayer:FindFirstChild("PlayerScripts")
+            local mods = ps and ps:FindFirstChild("Modules")
+            local ci = mods and mods:FindFirstChild("ClientReplicatedClasses")
+            local cf = ci and ci:FindFirstChild("ClientFighter")
+            local cim = cf and cf:FindFirstChild("ClientItem")
+            if cim then weaponState.ClientItem = require(cim) end
+        end)
+        pcall(function()
+            local ps = LocalPlayer:FindFirstChild("PlayerScripts")
+            local mods = ps and ps:FindFirstChild("Modules")
+            local it = mods and mods:FindFirstChild("ItemTypes")
+            local gm = it and it:FindFirstChild("Gun")
+            if gm then weaponState.GunItem = require(gm) end
+        end)
+        pcall(function()
+            local ps = LocalPlayer:FindFirstChild("PlayerScripts")
+            local mods = ps and ps:FindFirstChild("Modules")
+            local it = mods and mods:FindFirstChild("ItemTypes")
+            local me = it and (it:FindFirstChild("Melee") or it:FindFirstChild("Knife"))
+            if me then weaponState.MeleeItem = require(me) end
+        end)
+        pcall(function()
+            local ps = LocalPlayer:FindFirstChild("PlayerScripts")
+            local mods = ps and ps:FindFirstChild("Modules")
+            local items = mods and mods:FindFirstChild("Items")
+            local kn = items and items:FindFirstChild("Knife")
+            if kn then weaponState.KnifeItem = require(kn) end
+        end)
+        pcall(function()
+            local um = ReplicatedStorage:FindFirstChild("Modules")
+            local uu = um and um:FindFirstChild("Utility")
+            if uu then weaponState.Utility = require(uu) end
+        end)
+        pcall(function()
+            local ps = LocalPlayer:FindFirstChild("PlayerScripts")
+            local ct = ps and ps:FindFirstChild("Controllers")
+            local cc = ct and ct:FindFirstChild("CameraController")
+            if cc then weaponState.CameraController = require(cc) end
+        end)
+        pcall(function()
+            local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+            local rep = remotes and remotes:FindFirstChild("Replication")
+            local fg = rep and rep:FindFirstChild("Fighter")
+            local ucr = fg and fg:FindFirstChild("UpdateCameraRotation")
+            if ucr then weaponState.UpdateCameraRotation = ucr end
+        end)
+        if not (weaponState.ClientItem and weaponState.GunItem) then
+            warn("[Weapons] core modules missing — join match then re-toggle")
+            return
+        end
+        weaponState.OriginalInput = weaponState.ClientItem.Input
+        weaponState.ClientItem.Input = function(self, input, ...)
+            if hasInfoOptions() and isLocalItem(self) then
+                applyInfoOptions(self)
+            end
+            local result = { weaponState.OriginalInput(self, input, ...) }
+            if weaponState.Enabled and weaponState.FullAuto and input == "StartShooting" and isLocalItem(self) then
+                startFullAuto(self, input)
+            end
+            return unpack(result)
+        end
+        weaponState.OriginalGunStartShooting = weaponState.GunItem.StartShooting
+        weaponState.GunItem.StartShooting = function(self, ...)
+            if hasInfoOptions() and isLocalItem(self) then
+                applyInfoOptions(self)
+            end
+            local result = { weaponState.OriginalGunStartShooting(self, ...) }
+            if weaponState.Enabled and weaponState.NoSpread and isLocalItem(self) and typeof(result[3]) == "table" then
+                result[4] = true
+            end
+            return unpack(result)
+        end
+        if weaponState.MeleeItem and type(weaponState.MeleeItem.StartShooting) == "function" then
+            weaponState.OriginalMeleeStartShooting = weaponState.MeleeItem.StartShooting
+            weaponState.MeleeItem.StartShooting = function(self, ...)
+                if hasInfoOptions() and isLocalItem(self) then
+                    applyInfoOptions(self)
+                end
+                return weaponState.OriginalMeleeStartShooting(self, ...)
+            end
+        end
+        if weaponState.KnifeItem and type(weaponState.KnifeItem.StartAiming) == "function" then
+            weaponState.OriginalKnifeStartAiming = weaponState.KnifeItem.StartAiming
+            weaponState.KnifeItem.StartAiming = function(self, ...)
+                if hasInfoOptions() and isLocalItem(self) then
+                    applyInfoOptions(self)
+                end
+                if weaponState.Enabled and weaponState.AlwaysBackstab and isLocalItem(self) then
+                    startBackstabCameraLoop(math.max((self.Info and self.Info.AttackDelay) or 0.35, 0.35))
+                end
+                return weaponState.OriginalKnifeStartAiming(self, ...)
+            end
+        end
+        weaponState.Installed = true
+    end
+    local function fullRestore()
+        weaponState.Enabled = false
+        weaponState.Installed = false
+        _G.CurrentCameraLoopID = (_G.CurrentCameraLoopID or 0) + 1
+        restoreInfo()
+        restoreFastProjectile()
+        for _, conn in pairs(weaponState.Connections) do
+            pcall(function() conn:Disconnect() end)
+        end
+        if weaponState.ClientItem and weaponState.OriginalInput then
+            weaponState.ClientItem.Input = weaponState.OriginalInput
+        end
+        if weaponState.GunItem and weaponState.OriginalGunStartShooting then
+            weaponState.GunItem.StartShooting = weaponState.OriginalGunStartShooting
+        end
+        if weaponState.MeleeItem and weaponState.OriginalMeleeStartShooting then
+            weaponState.MeleeItem.StartShooting = weaponState.OriginalMeleeStartShooting
+        end
+        if weaponState.KnifeItem and weaponState.OriginalKnifeStartAiming then
+            weaponState.KnifeItem.StartAiming = weaponState.OriginalKnifeStartAiming
+        end
+    end
+    local function sync()
+        weaponState.NoSpread = S.wNoSpread and true or false
+        weaponState.FastShoot = S.wFastShoot and true or false
+        weaponState.FastProjectile = S.wFastProjectile and true or false
+        weaponState.FullAuto = S.wFullAuto and true or false
+        weaponState.AlwaysBackstab = S.wBackstab and true or false
+        weaponState.FireRate = tonumber(S.wFireRate) or 100
+        local enabled = weaponState.NoSpread
+            or weaponState.FastShoot
+            or weaponState.FastProjectile
+            or weaponState.FullAuto
+            or weaponState.AlwaysBackstab
+            or weaponState.FireRate ~= 100
+        if enabled then
+            installWeaponHooks()
+            weaponState.Enabled = true
+            refreshCachedInfo()
+            applyFastProjectile()
+        else
+            weaponState.Enabled = false
+            _G.CurrentCameraLoopID = (_G.CurrentCameraLoopID or 0) + 1
+            restoreInfo()
+            restoreFastProjectile()
+        end
+    end
+    WPN_API = { sync = sync, restore = fullRestore, state = function() return weaponState end }
+end
+
 -- ============ Trigger Bot Module ============
-local _triggerLastShot = 0
+local TRIG = { last = 0, warnT = 0, click = env._clickFn }
+if TRIG.click == nil then
+    warn("[RivalsHub] TriggerBot: click function missing (mouse1click/mouse1press unavailable)")
+end
+env._triggerClickOK = (TRIG.click ~= nil)
 local function TriggerBotStep()
-    if not S.triggerBotOn or MenuOpen then return end
+    if not S.triggerBotOn or MenuOpen or IsPickWeaponsOpen() then return end
     local now = os.clock()
-    if now - _triggerLastShot < 0.1 then return end
+    if TRIG.click == nil then
+        if now - TRIG.warnT > 5 then
+            TRIG.warnT = now
+            warn("[RivalsHub] TriggerBot: click function missing — trigger disabled")
+        end
+        return
+    end
+    -- 타깃 유효 판정 (조준점 10px + 최대 거리 + 팀/리졸버)
     local target = getBestTarget(S.silentAimFOV)
-    if not target then return end
-    if target.Parent and not ResolveShotSafe(target.Parent) then return end
-    local cam = Workspace.CurrentCamera
-    if not cam then return end
-    local pos, vis = cam:WorldToViewportPoint(target.Position)
-    if not vis then return end
-    local mouse = UserInputService:GetMouseLocation()
-    local dx = pos.X - mouse.X
-    local dy = pos.Y - mouse.Y
-    local dist = math.sqrt(dx * dx + dy * dy)
-    if dist > 10 then return end
-    _triggerLastShot = now
-    pcall(mouse1click)
+    local valid = false
+    if target then
+        local ch = target.Parent
+        local skip = false
+        if ch then
+            -- 팀원 제외 (getBestTarget은 팀 체크 없음; IsTeammate와 동일 규칙 인라인)
+            pcall(function()
+                local plr = Players:GetPlayerFromCharacter(ch)
+                if plr and LocalPlayer.Team and plr.Team and LocalPlayer.Team == plr.Team then
+                    skip = true
+                end
+            end)
+            if not skip and not ResolveShotSafe(ch) then skip = true end
+        end
+        if not skip then
+            local cam = Workspace.CurrentCamera
+            if cam then
+                local pos, vis = cam:WorldToViewportPoint(target.Position)
+                if vis then
+                    local mouse = UserInputService:GetMouseLocation()
+                    local dx, dy = pos.X - mouse.X, pos.Y - mouse.Y
+                    local maxD = tonumber(S.triggerMaxDist) or 500
+                    if math.sqrt(dx * dx + dy * dy) <= 10
+                        and (cam.CFrame.Position - target.Position).Magnitude <= maxD then
+                        valid = true
+                    end
+                end
+            end
+        end
+    end
+    local reaction = (tonumber(S.triggerReactionMs) or 100) / 1000
+    local offset = (tonumber(S.triggerReactionOffsetMs) or 0) / 1000
+    local forget = tonumber(S.triggerForgetSec) or 0.5
+    local shootD = (tonumber(S.triggerShootDelayMs) or 0) / 1000
+    if valid then
+        if not env._trigAimStart then
+            env._trigAimStart = now
+            env._trigFireAt = now + reaction + math.random() * offset
+        end
+        env._trigLastSeen = now
+    end
+    local lastSeen = env._trigLastSeen or 0
+    -- forget: 놓친 뒤에도 잠시 계속 발사
+    local inForget = (not valid) and (env._trigAimStart ~= nil) and (now - lastSeen <= forget)
+    if (valid and now >= (env._trigFireAt or math.huge)) or inForget then
+        if now - TRIG.last >= math.max(shootD, 0.03) then
+            TRIG.last = now
+            pcall(TRIG.click)
+        end
+    end
+    if not valid and not inForget then
+        env._trigAimStart = nil
+        env._trigFireAt = nil
+    end
 end
 
 -- ============ Fast Shot (Rapid Fire) Module ============
@@ -3004,13 +3742,13 @@ local function RestoreAllHooks()
     end
     -- Harion 사일런트 훅 (원본 직접 보관분)
     pcall(function()
-        if _saOldFireServer ~= nil then
+        if SA_H.old ~= nil then
             local remotes = ReplicatedStorage:FindFirstChild("Remotes")
             local rep = remotes and remotes:FindFirstChild("Replication")
             local fg = rep and rep:FindFirstChild("Fighter")
             local ui = fg and fg:FindFirstChild("UseItem")
             if ui and ui:IsA("RemoteEvent") then
-                hookfunction(ui.FireServer, _saOldFireServer)
+                hookfunction(ui.FireServer, SA_H.old)
                 n += 1
             end
         end
@@ -3027,7 +3765,8 @@ local function FullCleanup()
     env._ragebotActive = false
     pcall(StopUserRagebot)
     pcall(RestoreAllHooks)
-    DisconnectAll()
+    pcall(function() if WPN_API and WPN_API.restore then WPN_API.restore() end end)
+    pcall(DisconnectAll)
     pcall(RestoreSky)
     pcall(function()
         SkinState.hooksDisabled = true
@@ -3035,6 +3774,12 @@ local function FullCleanup()
     end)
     pcall(function()
         if Library and Library.Unload then Library:Unload() end
+    end)
+    -- 폴백: Obsidian GUI 직접 제거 (Library:Unload이 없거나 실패해도 메뉴가 남지 않게)
+    pcall(function()
+        local g = env._obsGui
+        if typeof(g) == "Instance" then g:Destroy() end
+        env._obsGui = nil
     end)
     getgenv().RivalsAimESP_Loaded = false
     print("[RivalsHub] unloaded")
@@ -5383,15 +6128,39 @@ end
 Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true
 
-local Window = Library:CreateWindow({
-    Title = "RIVALS HUB " .. HUB_VERSION,
-    Footer = "Madium",
-    Icon = 95816097006870,
-    NotifySide = "Right",
-    ShowCustomCursor = true,
-    Center = true,
-    AutoShow = true,
-})
+local Window
+do
+    -- Obsidian이 생성하는 ScreenGui를 기억해뒀다가 언로드 폴백에서 직접 제거
+    local _guiBefore = {}
+    pcall(function()
+        local h = gethui and gethui()
+        if typeof(h) == "Instance" then
+            for _, g in ipairs(h:GetChildren()) do
+                if g:IsA("ScreenGui") then _guiBefore[g] = true end
+            end
+        end
+    end)
+    Window = Library:CreateWindow({
+        Title = "RIVALS HUB " .. HUB_VERSION,
+        Footer = "Madium",
+        Icon = 95816097006870,
+        NotifySide = "Right",
+        ShowCustomCursor = true,
+        Center = true,
+        AutoShow = true,
+    })
+    pcall(function()
+        local h = gethui and gethui()
+        if typeof(h) == "Instance" then
+            for _, g in ipairs(h:GetChildren()) do
+                if g:IsA("ScreenGui") and not _guiBefore[g] then
+                    env._obsGui = g
+                    break
+                end
+            end
+        end
+    end)
+end
 pcall(function() Library:OnUnload(FullCleanup) end)
 
 local Tabs = {
@@ -5403,6 +6172,7 @@ local Tabs = {
 }
 
 -- ---------- Aimbot ----------
+do
 local AimbotBox = Tabs.Main:AddGroupbox({ Side = "Left", Name = "Aimbot", IconName = "crosshair" })
 AimbotBox:AddToggle("RIV_SafeMode", {
     Text = T("Safe Mode (전체 OFF)", "Safe Mode (All OFF)"),
@@ -5503,9 +6273,20 @@ AimbotBox:AddToggle("RIV_SilentAim", {
     Callback = function(v)
         S.silentAimOn = v
         if v then pcall(function() if env._silentAimRehook then env._silentAimRehook() end end) end
-        Notify(T("사일런트 에임", "Silent Aim"), v and T("ON - 카메라 고정 조준", "ON - no camera move") or "OFF")
+        pcall(_saStatusTick, true)
+        if v then
+            if SA_H.installed then
+                Notify(T("사일런트 에임", "Silent Aim"), T("ON - 후킹됨", "ON - hooked"))
+            else
+                Notify(T("사일런트 에임", "Silent Aim"), T("ON - 후킹 대기중 (매치 입장 필요)", "ON - waiting for hook (join match)"))
+            end
+        else
+            Notify(T("사일런트 에임", "Silent Aim"), "OFF")
+        end
     end,
 })
+AimbotBox:AddLabel("Silent: ...", true, "RIV_SilentStatus")
+task.defer(function() pcall(_saStatusTick, true) end)
 AimbotBox:AddToggle("RIV_SilentShow", {
     Text = T("사일런트 FOV 표시", "Show Silent FOV"),
     Default = S.silentShowFOV,
@@ -5673,35 +6454,35 @@ RageBox:AddToggle("RIV_Ragebot", {
     Callback = function(v)
         S.ragebotOn = v
         env._ragebotActive = v
-        Notify(T("레이지 봇", "Rage Bot"), v and T("ON - 자동조준 + 자동발사", "ON - auto aim + auto fire") or "OFF")
+        if v then
+            local okS = false
+            pcall(function()
+                if env._riv_startRagebot then okS = env._riv_startRagebot(true) end
+            end)
+            if okS then
+                Notify(T("레이지 봇", "Rage Bot"), T("ON - Controller 시작됨", "ON - controller started"))
+            else
+                Notify(T("레이지 봇", "Rage Bot"), T("ON - 모듈 대기중 (매치 입장 필요)", "ON - waiting for modules (join match)"))
+            end
+        else
+            pcall(function() if env._riv_startRagebot then env._riv_startRagebot(false) end end)
+            env._rageStage = "Off"
+            Notify(T("레이지 봇", "Rage Bot"), "OFF")
+        end
+        pcall(_rageStatusTick, true)
+        if v then
+            -- 3초 뒤에도 한 발도 안 나갔으면 막힌 단계를 알림 (진단용)
+            task.delay(3, function()
+                if S.ragebotOn and RAGE_D.shots <= 0 then
+                    Notify(T("레이지 봇", "Rage Bot"), T("대기중: ", "Waiting: ") .. tostring(env._rageStage or ""))
+                    pcall(_rageStatusTick, true)
+                end
+            end)
+        end
     end,
 })
-RageBox:AddToggle("RIV_FastShot", {
-    Text = "Fast Shot",
-    Default = S.rivRapidFire,
-    Callback = function(v)
-        S.rivRapidFire = v
-        env._rivRapidFire = v
-        Notify("Fast Shot", v and T("ON - 연사속도 최저", "ON - min fire interval") or "OFF")
-    end,
-})
-RageBox:AddToggle("RIV_NoSpread", {
-    Text = "No Spread",
-    Default = S.rivNoRecoil,
-    Callback = function(v)
-        S.rivNoRecoil = v
-        env._rivNoRecoil = v
-        Notify("No Spread", v and T("ON - 후발산/리코일 0", "ON - zero spread/recoil") or "OFF")
-    end,
-})
-RageBox:AddToggle("RIV_TriggerBot", {
-    Text = "Trigger Bot",
-    Default = S.triggerBotOn,
-    Callback = function(v)
-        S.triggerBotOn = v
-        if v then Notify("Trigger Bot", T("ON - 적 조준 시 자동 발사", "ON - auto fire on target")) else Notify("Trigger Bot", "OFF") end
-    end,
-})
+RageBox:AddLabel("Rage: ...", true, "RIV_RageStatus")
+task.defer(function() pcall(_rageStatusTick, true) end)
 RageBox:AddSlider("RIV_RageStability", {
     Text = "Stability",
     Default = S.ragebotStability,
@@ -5720,13 +6501,30 @@ RageBox:AddSlider("RIV_RageFrames", {
         env._ragebotShootFrames = math.floor(v)
     end,
 })
-RageBox:AddDropdown("RIV_RageSlot", {
-    Values = { "Primary", "Secondary", "Melee" },
-    Default = S.ragebotWeaponSlot,
-    Multi = false,
-    Text = "Weapon Slot",
-    Callback = function(v) S.ragebotWeaponSlot = v end,
-})
+for _, _slotName in ipairs({ "Primary", "Secondary", "Melee" }) do
+    local _sn = _slotName
+    RageBox:AddToggle("RIV_RageSlot_" .. _sn, {
+        Text = T("무기: ", "Weapon: ") .. _sn,
+        Default = (S.rageSlotEnabled == nil or S.rageSlotEnabled[_sn] ~= false),
+        Callback = function(v)
+            S.rageSlotEnabled = S.rageSlotEnabled or {}
+            S.rageSlotEnabled[_sn] = v
+        end,
+    })
+end
+for _ordIdx = 1, 3 do
+    local _oi = _ordIdx
+    RageBox:AddDropdown("RIV_RageOrder" .. _oi, {
+        Values = { "Primary", "Secondary", "Melee" },
+        Default = (S.rageSlotOrder and S.rageSlotOrder[_oi]) or RAGE_ROT.order[_oi],
+        Multi = false,
+        Text = T("순서 ", "Order ") .. _oi,
+        Callback = function(v)
+            S.rageSlotOrder = (type(S.rageSlotOrder) == "table" and S.rageSlotOrder or {})
+            S.rageSlotOrder[_oi] = v
+        end,
+    })
+end
 RageBox:AddSlider("RIV_RageFireRate", {
     Text = "Fire Rate",
     Default = S.ragebotFireRate,
@@ -5755,6 +6553,52 @@ RageBox:AddSlider("RIV_EvasionRadius", {
     Callback = function(v) S.evasionRadius = math.floor(v) end,
 })
 RageBox:AddLabel(T("Online: 오프라인 (kicia와 동일)", "Online: Offline (same as kicia)"), true)
+-- ---------- TriggerBot (Main 탭 내 별도 분류) ----------
+local TrigBox = Tabs.Main:AddGroupbox({ Side = "Right", Name = "TriggerBot", IconName = "target" })
+TrigBox:AddToggle("RIV_TriggerBot", {
+    Text = "Trigger Bot",
+    Default = S.triggerBotOn,
+    Callback = function(v)
+        S.triggerBotOn = v
+        if v then
+            if env._triggerClickOK == false then
+                Notify("Trigger Bot", T("클릭 함수 없음 — 이 실행기에서 불가", "No click function — unsupported executor"))
+            else
+                Notify("Trigger Bot", T("ON - 적 조준 시 자동 발사", "ON - auto fire on target"))
+            end
+        else Notify("Trigger Bot", "OFF") end
+    end,
+})
+TrigBox:AddSlider("RIV_TrigReact", {
+    Text = T("반응 시간 (ms)", "Reaction Time (ms)"),
+    Default = S.triggerReactionMs,
+    Min = 0, Max = 300, Rounding = 0,
+    Callback = function(v) S.triggerReactionMs = math.floor(v) end,
+})
+TrigBox:AddSlider("RIV_TrigReactOff", {
+    Text = T("반응 오차 (ms)", "Reaction Offset (ms)"),
+    Default = S.triggerReactionOffsetMs,
+    Min = 0, Max = 100, Rounding = 0,
+    Callback = function(v) S.triggerReactionOffsetMs = math.floor(v) end,
+})
+TrigBox:AddSlider("RIV_TrigForget", {
+    Text = T("망각 시간 (s)", "Forget Time (s)"),
+    Default = S.triggerForgetSec,
+    Min = 0, Max = 10, Rounding = 1,
+    Callback = function(v) S.triggerForgetSec = tonumber(v) or 0.5 end,
+})
+TrigBox:AddSlider("RIV_TrigShootD", {
+    Text = T("발사 딜레이 (ms)", "Shoot Delay (ms)"),
+    Default = S.triggerShootDelayMs,
+    Min = 0, Max = 300, Rounding = 0,
+    Callback = function(v) S.triggerShootDelayMs = math.floor(v) end,
+})
+TrigBox:AddSlider("RIV_TrigMaxD", {
+    Text = T("최대 거리", "Max Distance"),
+    Default = S.triggerMaxDist,
+    Min = 20, Max = 500, Rounding = 0,
+    Callback = function(v) S.triggerMaxDist = math.floor(v) end,
+})
 
 -- ---------- Device Spoof ----------
 local _DS_Current = "Computer"
@@ -5795,7 +6639,45 @@ DSBox:AddButton({
 })
 DSBox:AddLabel(T("장치: Computer (적용 안 함)", "Device: Computer (not applied)"), true, "RIV_DSStatus")
 
+-- ---------- Weapons (1n2ee) ----------
+local WpnBox = Tabs.Main:AddGroupbox({ Side = "Right", Name = "Weapons", IconName = "swords" })
+local _wpnMade = 0
+local function _wpnT(id, ko, en, key)
+    local ok, err = pcall(function()
+        WpnBox:AddToggle(id, {
+            Text = T(ko, en),
+            Default = S[key] and true or false,
+            Callback = function(v)
+                S[key] = v
+                if WPN_API then WPN_API.sync() end
+                Notify(T("무기", "Weapons"), T(ko, en) .. (v and " ON" or " OFF"))
+            end,
+        })
+    end)
+    if ok then _wpnMade += 1 else warn("[Weapons] toggle failed:", id, err) end
+end
+_wpnT("RIV_WpnNoSpread", "노 스프레드", "No Spread", "wNoSpread")
+_wpnT("RIV_WpnFastShoot", "패스트슛", "Fast Shoot", "wFastShoot")
+_wpnT("RIV_WpnFastProj", "패스트 프로젝타일", "Fast Projectile", "wFastProjectile")
+_wpnT("RIV_WpnFullAuto", "풀 오토", "Full Auto", "wFullAuto")
+_wpnT("RIV_WpnBackstab", "항상 백스탭", "Always Backstab", "wBackstab")
+local okSl, errSl = pcall(function()
+    WpnBox:AddSlider("RIV_WpnFireRate", {
+        Text = T("연사 비율", "Fire Rate"),
+        Default = S.wFireRate,
+        Min = 1, Max = 100, Rounding = 0,
+        Callback = function(v)
+            S.wFireRate = math.floor(v)
+            if WPN_API then WPN_API.sync() end
+        end,
+    })
+end)
+if not okSl then warn("[Weapons] slider failed:", errSl) end
+print("[Weapons] UI built:", _wpnMade, "toggles")
+end
+
 -- ---------- Spoof ----------
+do
 local SpoofNameBox = Tabs.Spoof:AddGroupbox({ Side = "Left", Name = "Name Spoof", IconName = "ghost" })
 SpoofNameBox:AddToggle("RIV_NameSpoof", {
     Text = "Name Spoof",
@@ -5937,6 +6819,7 @@ LoadoutBox:AddToggle("RIV_LoadoutSilent", {
     Default = LoadoutCfg.Silent,
     Callback = function(v) LoadoutCfg.Silent = v end,
 })
+end
 
 -- ---------- Skins ----------
 if false then -- SKIN-UI-OFF-START
@@ -6649,6 +7532,7 @@ SkinBox:AddButton({
 end -- SKIN-UI-OFF-END
 
 -- ---------- World ----------
+do
 local WorldBox = Tabs.World:AddGroupbox({ Side = "Left", Name = "Skybox", IconName = "cloud" })
 WorldBox:AddToggle("RIV_Skybox", {
     Text = "Skybox",
@@ -6721,10 +7605,32 @@ WorldBox:AddButton({
         Notify(T("스카이박스", "Skybox"), name .. (ok and T(" 추가됨", " added") or T(" 추가됨(목록갱신 실패)", " added (list refresh failed)")))
     end,
 })
+end
 
 -- ---------- Updates ----------
+do
 local UpBox = Tabs.Updates:AddGroupbox({ Side = "Left", Name = "Changelog", IconName = "bell" })
 local RIV_CHANGELOG = {
+    { v = "V0.9.3c", text = T("언로드 재수정 — DisconnectAll pcall 처리 + Obsidian GUI 직접 제거 폴백. 중간 단계 실패해도 메뉴까지 확실히 닫힘.", "Unload fix v2 — pcall DisconnectAll + direct Obsidian GUI destroy fallback.") },
+    { v = "V0.9.3b", text = T("Weapons UI 방탄화 — 토글/슬라이더 개별 pcall + 실패 시 콘솔 경고 + 생성 개수 출력.", "Weapons UI hardening — per-control pcall with console warnings.") },
+    { v = "V0.9.3a", text = T("구 Fast Shot/No Spread 토글 제거 (Weapons 분류로 통합). 잔류값 강제 OFF.", "Removed legacy Fast Shot/No Spread toggles (merged into Weapons). Residual flags forced OFF.") },
+    { v = "V0.9.3", text = T("Weapons 분류 추가(1n2ee 이식) — 노스프레드/패스트슛/패스트프로젝타일/풀오토/항상백스탭+연사비율. 원본 로직 그대로, 언로드 시 원복.", "Weapons tab ported from 1n2ee — nospread/fastshoot/projectile/fullauto/backstab + rate. Restored on unload.") },
+    { v = "V0.9.2g", text = T("트리거봇 Main 탭 내 별도 분류로 이동 (탭 분리 취소).", "TriggerBot moved into its own groupbox inside Main tab.") },
+    { v = "V0.9.2f", text = T("트리거봇 별도 탭 분리 — Trigger 탭에 토글+5종 옵션 이동. 저장 ID 그대로라 기존 설정 유지.", "TriggerBot own tab — moved toggle + 5 options. Saved settings kept.") },
+    { v = "V0.9.2e", text = T("트리거봇 5종 옵션 — 반응시간/반응오차/망각시간/발사딜레이/최대거리. 사진 스펙 그대로.", "Triggerbot 5 options — reaction/offset/forget/shoot-delay/max-distance.") },
+    { v = "V0.9.2d", text = T("순환 순서 지정 — 순서 1/2/3 드롭다운으로 회전 순서 변경 가능 (중복은 자동 제거).", "Custom cycle order — Order 1/2/3 dropdowns (duplicates auto-removed).") },
+    { v = "V0.9.2c", text = T("무기 순환 — Weapon Slot 단일 선택→3종 토글. 켜진 슬롯을 Primary→Secondary→Melee로 순환 장착, 탄 없음이면 즉시 다음.", "Weapon cycle — 3 slot toggles, rotates Primary to Melee, swaps early when empty.") },
+    { v = "V0.9.2b", text = T("무기 선택 중 일시정지 — PickWeapons 실시간 감지(캐시+1초 재탐색). 선택창 열리면 레이지/트리거/회피 전부 정지.", "Pause while picking weapons — realtime PickWeapons detection. Rage/trigger/evasion halt.") },
+    { v = "V0.9.2a", text = T("레이지 무조건 발사 — 메뉴 닫힘 상태에서 타깃 없이도 Fire Rate 간격 발사. 타깃 있으면 Controller가 조준 보정.", "Rage always fires when menu closed, target or not. Controller corrects aim when target held.") },
+    { v = "V0.9.2", text = T("레이지봇 자동 발사 — Controller 타깃 유지 시 Fire Rate 간격으로 자동 클릭. 리졸버 ON이면 방패/카타나 정면 제외.", "Ragebot autofire — auto-clicks at Fire Rate while Controller holds target. Resolver skips shields.") },
+    { v = "V0.9.1h", text = T("레이지봇 AntiEnhancement식으로 교체 — Controller desync 엔진 기동(Kicia 직접발사 봉인). 시작 성공/모듈대기 알림 + 팀전 kill 판정. 둘 동시 실행 금지.", "Ragebot switched to AntiEnhancement Controller desync engine. Never run both scripts together.") },
+    { v = "V0.9.1g", text = T("레이지 총기 탐색 수정 — 원본처럼 FC.Objects→내 파이터→ItemObserver:EquippedItemAsGun(). 켠 뒤 3초 무발사면 막힌 단계 알림.", "Rage gun lookup fix — FC.Objects to ItemObserver like original. Notify blocked stage if no fire in 3s.") },
+    { v = "V0.9.1f", text = T("레지스터 초과 수정 — 청크 local 204→171개로 축소(데이터 테이블 패킹 + UI 구간 스코핑). 동작 변경 없음.", "Register overflow fix — chunk locals 204 to 171 via table packing and UI scoping. No behavior change.") },
+    { v = "V0.9.1e", text = T("레이지봇 Kicia 이식 — jD gun Plan 그대로(desync+상수 페이로드+HitboxHead+raycast 플래그). 카메라 CFrame 계산 제거(원본에 없음). 단계 진단 Stage 표시. 나이프는 클릭 폴백.", "Ragebot Kicia port — desync + const payload + HitboxHead + raycast flag, no camera frames. Stage diagnosis.") },
+    { v = "V0.9.1d", text = T("레이지 무반응 수정 — 메뉴 닫을 때 ON이 옛값으로 덮어씌워지던 버그 제거(MenuOpen 게이트로 이미 일시정지됨). Targets/Fired 상태 라벨 추가.", "Rage unresponsive fix — menu close no longer wipes ON state. Targets/Fired status label added.") },
+    { v = "V0.9.1c", text = T("사일런트 진단+내성 — 후킹 영속 재시도(5초), enum 문자열 폴백 매칭, Seen/Redirected 상태 라벨, 후킹됨/대기중 알림, Drawing 부재 경고.", "Silent diagnosis — persistent rehook, enum string fallback, Seen/Redirected status label, hooked/waiting notify.") },
+    { v = "V0.9.1b", text = T("레이지봇 초기식으로 교체 — 직접발사/desync 엔진 비활성, 스냅 조준+클릭 발사만. 클릭/이동 함수 공용 확보. Controller 기동 봉인.", "Ragebot reverted to original — snap aim + click fire only, direct-fire/desync engine off.") },
+    { v = "V0.9.1a", text = T("트리거봇 수정(클릭함수 확보+부재 진단+팀원 오발 방지) + 레이지 박스 순서 정리(사진 항목을 봇 바로 아래로) + 언어 파일 영속(리조인 유지) + 플레이어 LocaleId 우선 감지 + 로드 알림에 적용 언어 표시.", "Triggerbot fix (click-fn resolve + missing diagnosis + no team fire) + Rage box reorder + language file persist + Player.LocaleId priority + applied language in load notify.") },
     { v = "V0.9.1", text = T("언로드 수정 — 버튼 형식 오류(무반응) + 사일런트 FOV 잔상 + 후킹 미원복 해결. 언로드 시 전 후킹 원복 + 전 도형 제거 + 완료 알림.", "Unload fix — dead button format + leftover silent FOV + unrestored hooks. Unload now restores all hooks, removes all drawings, and notifies.") },
     { v = "V0.0.9.14", text = T("랭크 표시 수정 — Kicia RankTracker 이식(DisplayELO + SeasonLibrary → 랭크명). 기존 leaderstats/Rank 경로는 존재하지 않아 항상 숨겨졌음. 윈스트릭 속성명 폴백 추가.", "Rank ESP fix — ported Kicia RankTracker (DisplayELO + SeasonLibrary rank name). Old leaderstats/Rank path never existed so it stayed hidden. Winstreak attribute fallbacks added.") },
     { v = "V0.0.9.13", text = T("언어 전체 적용 — 전 메뉴 한/영 전환 + 감지 강화(cloneref/정규화) + 콘솔 locale 출력 + UI Settings 수동 선택(자동/한국어/English).", "Full language support — entire menu KR/EN + hardened detection (cloneref/normalize) + console locale print + manual override in UI Settings.") },
@@ -6804,13 +7710,15 @@ local RIV_CHANGELOG = {
 for _, e in ipairs(RIV_CHANGELOG) do
     UpBox:AddLabel(e.v .. " — " .. e.text, true)
 end
+end
 
 -- ---------- UI Settings ----------
+do
 local MenuGroup = Tabs["UI Settings"]:AddGroupbox({ Side = "Left", Name = "Menu", IconName = "wrench" })
 do
     local _langVals = { "Auto", "한국어", "English" }
     local _langDef = "Auto"
-    local f = getgenv().RivalsLang
+    local f = getgenv().RivalsEffLang and getgenv().RivalsEffLang() or getgenv().RivalsLang
     if f == "ko" then _langDef = "한국어" elseif f == "en" then _langDef = "English" end
     MenuGroup:AddDropdown("RIV_Lang", {
         Values = _langVals,
@@ -6818,10 +7726,15 @@ do
         Multi = false,
         Text = T("언어 (재실행 시 적용)", "Language (applies on re-execute)"),
         Callback = function(v)
-            if v == "한국어" then getgenv().RivalsLang = "ko"
-            elseif v == "English" then getgenv().RivalsLang = "en"
-            else getgenv().RivalsLang = nil end
-            Notify(T("언어", "Language"), T("재실행하면 적용됨", "Applies on re-execute"))
+            local save = getgenv().RivalsSaveLang
+            if v == "한국어" then
+                if save then save("ko") else getgenv().RivalsLang = "ko" end
+            elseif v == "English" then
+                if save then save("en") else getgenv().RivalsLang = "en" end
+            else
+                if save then save(nil) else getgenv().RivalsLang = nil end
+            end
+            Notify(T("언어", "Language"), T("재실행하면 적용됨 (리조인 유지)", "Applies on re-execute (kept after rejoin)"))
         end,
     })
     MenuGroup:AddLabel("Locale: " .. tostring(LANG_ID == "" and "auto/KO" or LANG_ID), true)
@@ -6867,17 +7780,16 @@ MenuGroup:AddSlider("RIV_Corner", {
 MenuGroup:AddDivider()
 MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu keybind" })
 MenuGroup:AddButton({ Text = T("언로드", "Unload"), Func = function() FullCleanup() end })
+end
 Library.ToggleKeybind = Options.MenuKeybind
 
 -- 메뉴 열림/닫힘 ↔ 레이지봇/트리거봇 일시정지 동기화
 local SavedMouseBehavior = nil
 local SavedMouseIcon = nil
 local function ApplyMenuSideEffects(open)
+    -- NOTE: RagebotStep/TriggerBotStep/EvasionStep은 이미 MenuOpen 게이트로 열림 중 일시정지되므로
+    -- S.ragebotOn/S.triggerBotOn을 직접 건드리지 않는다 (열린 채 켠 토글이 닫힐 때 꺼지던 버그).
     if open then
-        _savedRagebotOn = S.ragebotOn
-        _savedTriggerBotOn = S.triggerBotOn
-        S.ragebotOn = false
-        S.triggerBotOn = false
         pcall(function()
             SavedMouseBehavior = UserInputService.MouseBehavior
             SavedMouseIcon = UserInputService.MouseIconEnabled
@@ -6885,8 +7797,6 @@ local function ApplyMenuSideEffects(open)
             UserInputService.MouseIconEnabled = true
         end)
     else
-        S.ragebotOn = _savedRagebotOn
-        S.triggerBotOn = _savedTriggerBotOn
         task.defer(function()
             task.wait(0.05)
             pcall(function()
@@ -6939,6 +7849,11 @@ if SaveManager then
     if not getgenv().RivalsMinimal then
         pcall(function() SaveManager:LoadAutoloadConfig() end)
     end
+    -- 구 Fast Shot/No Spread 토글 제거됨 (Weapons 분류로 통합): 이전 세션·저장 잔류값 강제 OFF
+    S.rivRapidFire = false
+    S.rivNoRecoil = false
+    env._rivRapidFire = false
+    env._rivNoRecoil = false
 end
 
 if Config.Fly.Enabled then SetFly(true) end
@@ -7032,10 +7947,30 @@ table.insert(Connections, RunService.Heartbeat:Connect(function(dt)
     if not ok2 then warn(err2) end
     local ok3, err3 = pcall(NoclipStep)
     if not ok3 then warn(err3) end
-    local ok4, err4 = pcall(RagebotStep)
-    if not ok4 then warn(err4) end
+    -- RagebotStep: AntiEnhancement Controller 사용 (Heartbeat 직접발사 비활성)
     local ok5, err5 = pcall(TriggerBotStep)
     if not ok5 then warn(err5) end
+    -- 레이지봇 자동 발사: 메뉴 닫힘 + 선택창 닫힘 상태에서만 무조건 Fire Rate 간격으로 클릭 (타깃 무관)
+    local okR, errR = pcall(function()
+        if S.ragebotOn and not MenuOpen and not IsPickWeaponsOpen() and env._clickFn then
+            local fire = true
+            if S.ragebotResolver then
+                local C = getgenv().__s9t0u1
+                if C and C.__active and C.__target and C.__target.Character then
+                    fire = ResolveShotSafe(C.__target.Character)
+                end
+            end
+            if fire then
+                local now = os.clock()
+                local fr = math.max(tonumber(S.ragebotFireRate) or 0.05, 0.05)
+                if now - (env._rageAutoLast or 0) >= fr then
+                    env._rageAutoLast = now
+                    env._clickFn()
+                end
+            end
+        end
+    end)
+    if not okR then warn(errR) end
     local ok6, err6 = pcall(EvasionStep)
     if not ok6 then warn(err6) end
 end))
@@ -7064,5 +7999,5 @@ end))
 
 local startupWpn = nil
 pcall(function() startupWpn = GetPlayerWeaponName(LocalPlayer) end)
-Notify("RIVALS HUB " .. HUB_VERSION, T("로드됨 | 장착 무기: ", "Loaded | weapon: ") .. (startupWpn or T("미감지", "unknown")))
+Notify("RIVALS HUB " .. HUB_VERSION, T("로드됨 | 장착 무기: ", "Loaded | weapon: ") .. (startupWpn or T("미감지", "unknown")) .. " | " .. (LANG_IS_KO and "한국어" or "English"))
 print("[RIVALS HUB " .. HUB_VERSION .. "] loaded. Weapon:", startupWpn or "nil", "Strength:", Config.Aimbot.Strength, "Smooth:", StrengthToSmooth(Config.Aimbot.Strength))
