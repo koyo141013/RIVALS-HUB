@@ -1,4 +1,4 @@
--- RIVALS HUB V0.9.5c | Madium | Obsidian UI
+-- RIVALS HUB V0.9.5e | Madium | Obsidian UI
 -- RightShift = 창 열기/닫기, 에임봇 ON이면 상시 작동(홀드 불필요)
 
 if getgenv().RivalsAimESP_Loaded then
@@ -65,7 +65,7 @@ getgenv().RivalsObsidian = Library
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
-local HUB_VERSION = "V0.9.5c"
+local HUB_VERSION = "V0.9.5e"
 
 -- ============ Language (체험 언어 자동: ko → 한국어, else English) ============
 -- 우선순위: getgenv().RivalsLang > 파일(RivalsHub/lang.txt, 리조인 유지) > 플레이어 LocaleId > RobloxLocaleId > 기본 한국어
@@ -729,21 +729,36 @@ local function rageClosestTarget()
     if not char then return nil, nil, nil end
     local myRoot = char:FindFirstChild("HumanoidRootPart")
     if not myRoot then return nil, nil, nil end
+    local myCam = Workspace.CurrentCamera
+    if not myCam then return nil, nil, nil end
+    local mousePos = UserInputService:GetMouseLocation()
     local closestPlayer, closestRoot, closestHead, closestDist = nil, nil, nil, 500
     for _, player in pairs(Players:GetPlayers()) do
         if rageIsEnemy(player) then
             local pChar = player.Character
             if pChar then
                 local pRoot = pChar:FindFirstChild("HumanoidRootPart")
-                local pHead = pChar:FindFirstChild("Head")
+                local pHead = pChar:FindFirstChild("HitboxHead") or pChar:FindFirstChild("Head")
                 local pHum = pChar:FindFirstChildWhichIsA("Humanoid")
                 if pRoot and pHead and pHum and pHum.Health > 0 then
                     local dist = (myRoot.Position - pRoot.Position).Magnitude
-                    if dist < closestDist then
-                        closestDist = dist
-                        closestPlayer = player
-                        closestRoot = pRoot
-                        closestHead = pHead
+                    -- 시야 내에 있는 적 우선 (FOV 체크)
+                    local ok, sp, vis = pcall(function()
+                        return myCam:WorldToViewportPoint(pHead.Position)
+                    end)
+                    if ok and vis then
+                        local screenDist = (Vector2.new(sp.X, sp.Y) - mousePos).Magnitude
+                        local fovLimit = tonumber(Config.Aimbot.FOV) or 150
+                        if screenDist <= fovLimit then
+                            -- 거리가 가깝고 화면 중앙에 가까운 적 우선
+                            local score = dist + (screenDist * 0.3)
+                            if score < closestDist then
+                                closestDist = score
+                                closestPlayer = player
+                                closestRoot = pRoot
+                                closestHead = pHead
+                            end
+                        end
                     end
                 end
             end
@@ -8716,6 +8731,8 @@ end
 do
 local UpBox = Tabs.Updates:AddGroupbox({ Side = "Left", Name = "Changelog", IconName = "bell" })
 local RIV_CHANGELOG = {
+    { v = "V0.9.5e", text = T("사일런트 FOV 100% 작동 — 메인 루프에서 원이 없으면 자동 재생성, S.silentAimOn + S.silentShowFOV 조건에서 항상 표시.", "Silent FOV 100% — auto-recreate circle in main loop, always visible when Silent Aim + Show FOV enabled.") },
+    { v = "V0.9.5d", text = T("레이지봇 명중률 개선 — 타겟 선정 시 HitboxHead 우선 + FOV 내 시야 체크 + 거리/화면중앙 가중치. 자동 발사 시 카메라를 타겟 방향으로 조준.", "Ragebot accuracy — HitboxHead priority + FOV visibility + distance/screen-center weight. Auto-fire aims camera at target.") },
     { v = "V0.9.5c", text = T("키 시스템 개선 — 저장된 키 파일로 리조인 유지, 키 입력 시 마우스 강제 표시(1인칭 포함), 확인 후 마우스 상태 복구.", "Key system — saved key persists after rejoin, mouse forced visible during input (1st person incl.), mouse state restored after confirm.") },
     { v = "V0.9.5c", text = T("키 시스템 개선 — 저장된 키 파일로 리조인 유지, 키 입력 시 마우스 강제 표시(1인칭 포함), 확인 후 마우스 상태 복구.", "Key system — saved key persists after rejoin, mouse forced visible during input (1st person incl.), mouse state restored after confirm.") },
     { v = "V0.9.5b", text = T("자체 감사 수정 6건 — MenuOpen 기본값 false(메뉴 열림 상태 유지 버그), iswindowactive 정의누락 대비, FOVCircle/FOVOutline nil 체크, 언로드 시 DO 안전 제거, 페이지 업/다운 nil 체크.", "Self-audit: 6 fixes — MenuOpen default false, iswindowactive nil-guard, FOV circle nil-guard, unload DO cleanup, page up/down nil-guard.") },
@@ -9014,6 +9031,31 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
     -- 사일런트 FOV (메인 루프에서 직접 구동)
     do
         local sc, so = env._silentFOVCircle, env._silentFOVOutline
+        -- 원이 없으면 다시 생성 (Drawing 미지원/해제 환경 대비)
+        if not sc then
+            pcall(function()
+                sc = Drawing.new("Circle")
+                sc.Color = Color3.fromRGB(255, 255, 255)
+                sc.Thickness = 1.5
+                sc.NumSides = 64
+                sc.Filled = false
+                sc.Transparency = 1
+                sc.Visible = false
+                env._silentFOVCircle = sc
+            end)
+        end
+        if not so then
+            pcall(function()
+                so = Drawing.new("Circle")
+                so.Color = Color3.fromRGB(0, 0, 0)
+                so.Thickness = 3
+                so.NumSides = 64
+                so.Filled = false
+                so.Transparency = 0.4
+                so.Visible = false
+                env._silentFOVOutline = so
+            end)
+        end
         local svis = S.silentAimOn and S.silentShowFOV
         local sr = tonumber(S.silentAimFOV) or 350
         if sc then
@@ -9086,22 +9128,43 @@ table.insert(Connections, RunService.Heartbeat:Connect(function(dt)
     -- RagebotStep: AntiEnhancement Controller 사용 (Heartbeat 직접발사 비활성)
     local ok5, err5 = pcall(TriggerBotStep)
     if not ok5 then warn(err5) end
-    -- 레이지봇 자동 발사: 메뉴 닫힘 + 선택창 닫힘 상태에서만 무조건 Fire Rate 간격으로 클릭 (타깃 무관)
+    -- 레이지봇 자동 발사: 메뉴 닫힘 + 선택창 닫힘 상태에서만 Fire Rate 간격으로 클릭 (타깃 무관)
     local okR, errR = pcall(function()
         if S.ragebotOn and not MenuOpen and not IsPickWeaponsOpen() and env._clickFn then
-            local fire = true
-            if S.ragebotResolver then
-                local C = getgenv().__s9t0u1
-                if C and C.__active and C.__target and C.__target.Character then
+            local C = getgenv().__s9t0u1
+            if C and C.__active and C.__target and C.__target.Character then
+                local fire = true
+                if S.ragebotResolver then
                     fire = ResolveShotSafe(C.__target.Character)
                 end
-            end
-            if fire then
-                local now = os.clock()
-                local fr = math.max(tonumber(S.ragebotFireRate) or 0.05, 0.05)
-                if now - (env._rageAutoLast or 0) >= fr then
-                    env._rageAutoLast = now
-                    env._clickFn()
+                if fire then
+                    local now = os.clock()
+                    local fr = math.max(tonumber(S.ragebotFireRate) or 0.05, 0.05)
+                    if now - (env._rageAutoLast or 0) >= fr then
+                        -- 카메라를 타겟 방향으로 조준 (정확도 향상)
+                        local cam = Workspace.CurrentCamera
+                        local targetChar = C.__target.Character
+                        local targetHead = targetChar and (targetChar:FindFirstChild("HitboxHead") or targetChar:FindFirstChild("Head"))
+                        local myChar = LocalPlayer.Character
+                        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+                        if cam and targetHead and myRoot then
+                            local targetPos = targetHead.Position
+                            local myPos = myRoot.Position
+                            local dir = (targetPos - myPos).Unit
+                            local camCF = cam.CFrame
+                            local lookDir = camCF.LookVector
+                            local dot = dir:Dot(lookDir)
+                            -- 타겟이 카메라 시야 밖에 있으면 조준 조정
+                            if dot < 0.95 then
+                                local newCF = CFrame.lookAt(myPos, targetPos)
+                                pcall(function()
+                                    cam.CFrame = newCF
+                                end)
+                            end
+                        end
+                        env._rageAutoLast = now
+                        env._clickFn()
+                    end
                 end
             end
         end
