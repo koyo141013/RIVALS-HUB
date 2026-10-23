@@ -1,4 +1,4 @@
--- RIVALS HUB V0.9.4d | Madium | Obsidian UI
+-- RIVALS HUB V0.9.5c | Madium | Obsidian UI
 -- RightShift = 창 열기/닫기, 에임봇 ON이면 상시 작동(홀드 불필요)
 
 if getgenv().RivalsAimESP_Loaded then
@@ -65,7 +65,7 @@ getgenv().RivalsObsidian = Library
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
-local HUB_VERSION = "V0.9.4d"
+local HUB_VERSION = "V0.9.5c"
 
 -- ============ Language (체험 언어 자동: ko → 한국어, else English) ============
 -- 우선순위: getgenv().RivalsLang > 파일(RivalsHub/lang.txt, 리조인 유지) > 플레이어 LocaleId > RobloxLocaleId > 기본 한국어
@@ -141,6 +141,150 @@ getgenv().RivalsLangDetected = LANG_ID
 print("[RivalsHub] locale=" .. tostring(LANG_ID == "" and "(empty->KO default)" or LANG_ID) .. " KO=" .. tostring(LANG_IS_KO))
 local function T(ko, en)
     if LANG_IS_KO then return ko else return en end
+end
+
+-- ============ Key System ============
+-- 키를 변경하려면 실행 전에 getgenv().RIVALS_KEY = "원하는키" 를 입력하세요
+local RIVALS_KEY = getgenv().RIVALS_KEY or "FREE_KEY_3248902490107834"
+getgenv().RivalsKeyVerified = false
+
+-- 저장된 키 확인 (파일 기반, 리조인 유지)
+local SavedKey = nil
+pcall(function()
+    if type(makefolder) == "function" then makefolder("RivalsHub") end
+    if type(isfolder) == "function" and isfolder("RivalsHub") and type(isfile) == "function" and isfile("RivalsHub/key.txt") and type(readfile) == "function" then
+        SavedKey = tostring(readfile("RivalsHub/key.txt") or ""):match("^%s*(.-)%s*$")
+    end
+end)
+
+if SavedKey == RIVALS_KEY then
+    getgenv().RivalsKeyVerified = true
+    print("[RivalsHub] 저장된 키로 인증 완료")
+else
+    -- 마우스 상태 저장 (키 시스템 표시 시 복구용)
+    local SavedMouseBehavior = nil
+    local SavedMouseIcon = nil
+    pcall(function()
+        SavedMouseBehavior = UserInputService.MouseBehavior
+        SavedMouseIcon = UserInputService.MouseIconEnabled
+    end)
+
+    -- 마우스 강제 표시 (1인칭 시에도 보임)
+    pcall(function()
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+        UserInputService.MouseIconEnabled = true
+    end)
+
+    local KeyGui = Instance.new("ScreenGui")
+    KeyGui.Name = "RivalsKeySystem"
+    KeyGui.ResetOnSpawn = false
+    KeyGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    KeyGui.DisplayOrder = 999999
+    local okKG, kgParent = pcall(function() return gethui and gethui() end)
+    if not okKG or not kgParent then kgParent = game:GetService("CoreGui") end
+    if not kgParent then kgParent = LocalPlayer:FindFirstChildOfClass("PlayerGui") end
+    if kgParent then KeyGui.Parent = kgParent end
+
+    local KeyFrame = Instance.new("Frame")
+    KeyFrame.Size = UDim2.new(0, 340, 0, 200)
+    KeyFrame.Position = UDim2.new(0.5, -170, 0.5, -100)
+    KeyFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+    KeyFrame.BorderSizePixel = 0
+    KeyFrame.Parent = KeyGui
+    local kc = Instance.new("UICorner") kc.CornerRadius = UDim.new(0, 12) kc.Parent = KeyFrame
+    local ks = Instance.new("UIStroke") ks.Color = Color3.fromRGB(80, 80, 90) ks.Thickness = 2 ks.Parent = KeyFrame
+
+    local KeyTitle = Instance.new("TextLabel")
+    KeyTitle.Size = UDim2.new(1, -20, 0, 40)
+    KeyTitle.Position = UDim2.new(0, 10, 0, 10)
+    KeyTitle.BackgroundTransparency = 1
+    KeyTitle.Text = T("RIVALS HUB 키 시스템", "RIVALS HUB Key System")
+    KeyTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    KeyTitle.TextSize = 18
+    KeyTitle.Font = Enum.Font.GothamBold
+    KeyTitle.Parent = KeyFrame
+
+    local KeyBox = Instance.new("TextBox")
+    KeyBox.Size = UDim2.new(1, -40, 0, 36)
+    KeyBox.Position = UDim2.new(0, 20, 0, 60)
+    KeyBox.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+    KeyBox.BorderSizePixel = 0
+    KeyBox.Text = ""
+    KeyBox.PlaceholderText = T("인증 키를 입력하세요", "Enter auth key")
+    KeyBox.PlaceholderColor3 = Color3.fromRGB(160, 160, 170)
+    KeyBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    KeyBox.TextSize = 16
+    KeyBox.Font = Enum.Font.Gotham
+    KeyBox.Parent = KeyFrame
+    local kbc = Instance.new("UICorner") kbc.CornerRadius = UDim.new(0, 8) kbc.Parent = KeyBox
+
+    local ConfirmBtn = Instance.new("TextButton")
+    ConfirmBtn.Size = UDim2.new(1, -40, 0, 36)
+    ConfirmBtn.Position = UDim2.new(0, 20, 0, 105)
+    ConfirmBtn.BackgroundColor3 = Color3.fromRGB(80, 160, 255)
+    ConfirmBtn.BorderSizePixel = 0
+    ConfirmBtn.Text = T("확인 및 실행", "Confirm & Run")
+    ConfirmBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ConfirmBtn.TextSize = 16
+    ConfirmBtn.Font = Enum.Font.GothamBold
+    ConfirmBtn.Parent = KeyFrame
+    local cbc = Instance.new("UICorner") cbc.CornerRadius = UDim.new(0, 8) cbc.Parent = ConfirmBtn
+
+    local KeyStatus = Instance.new("TextLabel")
+    KeyStatus.Size = UDim2.new(1, -40, 0, 24)
+    KeyStatus.Position = UDim2.new(0, 20, 0, 148)
+    KeyStatus.BackgroundTransparency = 1
+    KeyStatus.Text = ""
+    KeyStatus.TextColor3 = Color3.fromRGB(255, 80, 80)
+    KeyStatus.TextSize = 14
+    KeyStatus.Font = Enum.Font.Gotham
+    KeyStatus.Parent = KeyFrame
+
+    ConfirmBtn.MouseButton1Click:Connect(function()
+        local inputKey = KeyBox.Text
+        if inputKey == RIVALS_KEY then
+            getgenv().RivalsKeyVerified = true
+            -- 키 저장 (파일 기반, 리조인 유지)
+            pcall(function()
+                if type(writefile) == "function" then
+                    makefolder("RivalsHub")
+                    writefile("RivalsHub/key.txt", inputKey)
+                end
+            end)
+            -- 마우스 상태 복구
+            pcall(function()
+                if SavedMouseBehavior ~= nil then UserInputService.MouseBehavior = SavedMouseBehavior end
+                if SavedMouseIcon ~= nil then UserInputService.MouseIconEnabled = SavedMouseIcon end
+            end)
+            KeyGui:Destroy()
+        else
+            KeyStatus.Text = T("잘못된 키입니다", "Wrong key")
+            KeyStatus.TextColor3 = Color3.fromRGB(255, 80, 80)
+            task.delay(1.5, function()
+                if KeyStatus then KeyStatus.Text = "" end
+            end)
+        end
+    end)
+
+    -- 키 확인 대기 (최대 60초) - 키 시스템 GUI 파괴 후 메인 스크립트 진행
+    local kwaited = 0
+    repeat 
+        task.wait(0.1) 
+        kwaited = kwaited + 0.1 
+    until getgenv().RivalsKeyVerified or kwaited > 60
+
+    -- 루프 종료 후 마우스 복구 (안전 장치)
+    pcall(function()
+        if SavedMouseBehavior ~= nil then UserInputService.MouseBehavior = SavedMouseBehavior end
+        if SavedMouseIcon ~= nil then UserInputService.MouseIconEnabled = SavedMouseIcon end
+    end)
+
+    if not getgenv().RivalsKeyVerified then
+        warn("[RivalsHub] 키 입력이 확인되지 않아 스크립트를 종료합니다.")
+        return
+    end
+
+    print("[RivalsHub] 키 인증 완료 - 메인 스크립트 실행")
 end
 
 -- ============ Config ============
@@ -223,7 +367,7 @@ local Config = getgenv().RivalsConfig
 local S = {
     walkOn = false, fightOn = false, espOn = false, namesOn = false, healthOn = false, noclipOn = false,
     aimbotOn = false, aimbotStrength = 40, aimbotHitPart = "Both", silentAimOn = false, silentAimFOV = 350,
-    silentAimTargetMode = "Players", silentAimHitPart = "Head", silentShowFOV = true, antiKatanaOn = false,
+    silentAimTargetMode = "Players", silentAimHitPart = "Head", silentShowFOV = true, antiKatanaOn = true,
     ragebotOn = false, ragebotStability = 0.15, ragebotShootFrames = 1, ragebotResolver = false,
     ragebotEvasion = "Off", evasionRadius = 8, ragebotFireRate = 0.0005, ragebotWeaponSlot = "Melee",
     rageSlotEnabled = { Primary = true, Secondary = true, Melee = true },
@@ -247,7 +391,7 @@ local S = {
     rivNoRecoil = false,
 }
 -- 메뉴 상태 (Obsidian 메뉴 키바인드와 동기화; RagebotStep/TriggerBotStep이 참조)
-local MenuOpen = true
+local MenuOpen = false
 local _savedRagebotOn = false
 local _savedTriggerBotOn = false
 local selectedTargets = {}
@@ -1059,6 +1203,10 @@ local function StartUserRagebot()
             local data = results[3]
             if not data or typeof(data) ~= "table" then return unpack(results) end
             results[4] = true
+            -- 무기 선택창이 열려 있으면 가공 없이 통과 (선택 중 desync 난사 방지)
+            if IsPickWeaponsOpen and IsPickWeaponsOpen() then
+                return unpack(results)
+            end
             local target = self.__target
             if not self.__active or not target or not target.Character then return unpack(results) end
             if not self.__desync or self.__curr ~= target then
@@ -2502,9 +2650,28 @@ end
 function _playerHoldingKatana(plr)
     if not plr or not plr.Character then return false end
     local c = plr.Character
+    -- 1) 캐릭터 내 Tool (구 방식)
     local tool = c:FindFirstChildOfClass("Tool")
     if tool and string.find(string.lower(tool.Name), "katana", 1, true) then return true end
-    return false
+    -- 2) 뷰모델 ("플레이어명 - 무기명" 모델, Rivals 실제 장착 경로): 1.5초 캐시로 스캔 1회로
+    local now = os.clock()
+    local KC = env._katCache
+    if not KC or now - (KC.t or 0) > 1.5 then
+        KC = { t = now, set = {} }
+        pcall(function()
+            local vms = Workspace:FindFirstChild("ViewModels")
+            if vms then
+                for _, m in ipairs(vms:GetDescendants()) do
+                    if m:IsA("Model") and string.find(string.lower(m.Name), "katana", 1, true) then
+                        local owner = string.match(m.Name, "^(.-) %- ")
+                        if owner then KC.set[owner] = true end
+                    end
+                end
+            end
+        end)
+        env._katCache = KC
+    end
+    return KC.set[plr.Name] == true
 end
 
 -- 팀 체크 (saGetTarget보다 먼저 정의: TeamID 우선, Team 폴백)
@@ -2605,9 +2772,15 @@ local function buildManipulationCameraData(fromPos, part)
     if not SA_MOD.u or not part then return nil end
     local aimPosition = part.Position
     pcall(function()
-        local vel = part.AssemblyLinearVelocity or part.Velocity
+        -- HRP 속도 기준 예측 (헤드 파트 속도보다 안정적) + 핑 보정
+        local char = part.Parent
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local vel = (hrp and hrp.AssemblyLinearVelocity)
+            or part.AssemblyLinearVelocity or part.Velocity
         if typeof(vel) == "Vector3" and vel.Magnitude > 1 then
-            local lead = math.clamp(vel.Magnitude / 350, 0, 0.12)
+            local ping = 0
+            pcall(function() ping = tonumber(LocalPlayer:GetNetworkPing()) or 0 end)
+            local lead = math.clamp(vel.Magnitude / 350, 0, 0.12) + math.clamp(ping or 0, 0, 0.25)
             aimPosition = part.Position + vel * lead
         end
     end)
@@ -2651,7 +2824,9 @@ local function saInstallHook()
                 if target and part and target:FindFirstChild("HumanoidRootPart") then
                     local cam = Workspace.CurrentCamera
                     local fromPos = (cam and cam.CFrame.Position) or part.Position
-                    local newData = buildManipulationCameraData(fromPos, part)
+                    -- CFrame.new(동일 좌표) 등 내부 에러가 발사 자체를 깨지 않게 격리
+                    local newData = nil
+                    pcall(function() newData = buildManipulationCameraData(fromPos, part) end)
                     if newData then
                         SA_D.hits += 1
                         env._saHits = SA_D.hits
@@ -4536,7 +4711,7 @@ end
 local Holding = false
 local ESPObjects = {}
 local Connections = {}
-local FOVCircle, FOVOutline
+local FOVCircle, FOVOutline = nil, nil
 local GuiObjects = {}
 local FlyParts = {}
 local function DisconnectAll()
@@ -4579,8 +4754,9 @@ local function DisconnectAll()
     table.clear(ESPObjects)
     for _, hl in pairs(EspChams) do pcall(function() hl:Destroy() end) end
     table.clear(EspChams)
-    pcall(function() FOVCircle:Remove() end)
-    pcall(function() FOVOutline:Remove() end)
+    pcall(function() if FOVCircle and FOVCircle.Remove then FOVCircle:Remove() end end)
+    pcall(function() if FOVOutline and FOVOutline.Remove then FOVOutline:Remove() end end)
+    FOVCircle, FOVOutline = nil, nil
     -- 사일런트 FOV 원 + 연결 (언로드 시 화면에 남던 누수)
     pcall(function()
         if getgenv().RivalsSilentFOVConn then getgenv().RivalsSilentFOVConn:Disconnect() end
@@ -4655,7 +4831,19 @@ end
 getgenv().RivalsAimESP_Cleanup = FullCleanup
 
 local function NewDraw(class, props)
-    local d = Drawing.new(class)
+    local okD, d = pcall(function() return Drawing.new(class) end)
+    if not okD or d == nil then
+        -- Drawing 미지원: 전체 청크 사망 방지용 더미 (읽기 nil, 쓰기 무시, Remove 무연산)
+        local dummy = {}
+        setmetatable(dummy, {
+            __index = function(_, k)
+                if k == "Remove" then return function() end end
+                return nil
+            end,
+            __newindex = function() end,
+        })
+        return dummy
+    end
     for k, v in pairs(props) do
         local ok = pcall(function() d[k] = v end)
         if not ok then pcall(setrenderproperty, d, k, v) end
@@ -5000,6 +5188,18 @@ local function HideESP(o)
 end
 
 -- Kicia AmmoBar용: 장착 무기 탄약 읽기 (best-effort)
+-- ESP 고비용 조회 1초 TTL 캐시 (매 프레임 GetDescendants 스캔 방지)
+env._espTxtCache = env._espTxtCache or {}
+local function _espCached(player, key, fn)
+    local now = os.clock()
+    local store = env._espTxtCache
+    local e = store[player] and store[player][key]
+    if e and now - e.t < 1 then return e.v end
+    local v = fn()
+    store[player] = store[player] or {}
+    store[player][key] = { t = now, v = v }
+    return v
+end
 local function GetPlayerAmmoFrac(player)
     local frac, cur, max = nil, nil, nil
     pcall(function()
@@ -5118,7 +5318,9 @@ local function UpdateESPPlayer(player, viewportSize)
 
     -- Kicia AmmoBar (원본: 하단 수평 바, ColorMode 동일)
     if Config.ESP.AmmoBar then
-        local frac = GetPlayerAmmoFrac(player)
+        local frac = _espCached(player, "ammo", function()
+            return GetPlayerAmmoFrac(player)
+        end)
         if frac ~= nil then
             local bh = 3
             o.ammoBack.Visible = true
@@ -5201,7 +5403,11 @@ local function UpdateESPPlayer(player, viewportSize)
 
     local heldName = nil
     if Config.ESP.HeldWeapon or Config.ESP.Deflecting then
-        pcall(function() heldName = GetPlayerWeaponName(player) end)
+        heldName = _espCached(player, "wpn", function()
+            local r = nil
+            pcall(function() r = GetPlayerWeaponName(player) end)
+            return r
+        end)
     end
     if Config.ESP.HeldWeapon then
         o.wpn.Visible = true
@@ -6971,13 +7177,21 @@ local function pickLoadout(force)
     if not force and LoadoutCfg.LastSent == sig then return end
     LoadoutCfg.LastSent = sig
     pcall(function()
-        local args = {{
+        local RS = game:GetService("ReplicatedStorage")
+        local remotes = RS:FindFirstChild("Remotes") or RS:FindFirstChild("Remote")
+        if not remotes then return end
+        local replication = remotes:FindFirstChild("Replication")
+        if not replication then return end
+        local fighter = replication:FindFirstChild("Fighter")
+        if not fighter then return end
+        local pw = fighter:FindFirstChild("PickWeapons")
+        if not pw or not pw:IsA("RemoteEvent") then return end
+        pw:FireServer(
             LoadoutCfg.Weapons[1],
             LoadoutCfg.Weapons[2],
             LoadoutCfg.Weapons[3],
             LoadoutCfg.Weapons[4]
-        }}
-        game:GetService("ReplicatedStorage").Remotes.Replication.Fighter.PickWeapons:FireServer(unpack(args))
+        )
     end)
     if not LoadoutCfg.Silent then
         print("[Loadout] pick sent:", LoadoutCfg.Weapons[1], LoadoutCfg.Weapons[2], LoadoutCfg.Weapons[3], LoadoutCfg.Weapons[4])
@@ -6988,8 +7202,7 @@ local function runLoadoutLoop()
     if _loadoutLoopRunning then return end
     _loadoutLoopRunning = true
     task.spawn(function()
-        local myGen = _spoofGen
-        while myGen == getgenv().RivalsSpoofGen and LoadoutCfg.Enabled do
+        while not getgenv().RivalsHubDead and LoadoutCfg.Enabled do
             pcall(pickLoadout)
             task.wait(0.5)
         end
@@ -7446,7 +7659,11 @@ TrigBox:AddToggle("RIV_TriggerBot", {
             else
                 Notify("Trigger Bot", T("ON - 적 조준 시 자동 발사", "ON - auto fire on target"))
             end
-        else Notify("Trigger Bot", "OFF") end
+        else
+            Notify("Trigger Bot", "OFF")
+            env._trigAimStart = nil
+            env._trigFireAt = nil
+        end
     end,
 })
 TrigBox:AddSlider("RIV_TrigReact", {
@@ -7646,7 +7863,10 @@ LoadoutBox:AddToggle("RIV_AutoLoadout", {
     Default = LoadoutCfg.Enabled,
     Callback = function(v)
         LoadoutCfg.Enabled = v
-        if v then runLoadoutLoop() end
+        if v then 
+            pcall(pickLoadout, true)  -- 즉시 한 번 전송
+            runLoadoutLoop() 
+        end
         Notify("Auto Loadout", v and "ON" or "OFF")
     end,
 })
@@ -8496,6 +8716,13 @@ end
 do
 local UpBox = Tabs.Updates:AddGroupbox({ Side = "Left", Name = "Changelog", IconName = "bell" })
 local RIV_CHANGELOG = {
+    { v = "V0.9.5c", text = T("키 시스템 개선 — 저장된 키 파일로 리조인 유지, 키 입력 시 마우스 강제 표시(1인칭 포함), 확인 후 마우스 상태 복구.", "Key system — saved key persists after rejoin, mouse forced visible during input (1st person incl.), mouse state restored after confirm.") },
+    { v = "V0.9.5c", text = T("키 시스템 개선 — 저장된 키 파일로 리조인 유지, 키 입력 시 마우스 강제 표시(1인칭 포함), 확인 후 마우스 상태 복구.", "Key system — saved key persists after rejoin, mouse forced visible during input (1st person incl.), mouse state restored after confirm.") },
+    { v = "V0.9.5b", text = T("자체 감사 수정 6건 — MenuOpen 기본값 false(메뉴 열림 상태 유지 버그), iswindowactive 정의누락 대비, FOVCircle/FOVOutline nil 체크, 언로드 시 DO 안전 제거, 페이지 업/다운 nil 체크.", "Self-audit: 6 fixes — MenuOpen default false, iswindowactive nil-guard, FOV circle nil-guard, unload DO cleanup, page up/down nil-guard.") },
+    { v = "V0.9.5a", text = T("키 시스템 수정 — 키를 FREE_KEY_3248902490107834로 고정, 인증 완료 로그 추가. 키 입력 후 메인 GUI 실행.", "Key system fix — key set to FREE_KEY_3248902490107834, auth complete log added.") },
+    { v = "V0.9.5", text = T("키 시스템 + 자동 무기 로드 수정 — 처음 실행 시 키 입력 창 추가 (입력 후 실행), PickWeapons 리모트 경로 복구 + 즉시 전송 + _spoofGen 의존성 제거.", "Key System + Auto Loadout fix — key input GUI on first load, PickWeapons path restored + instant send + removed spoof dependency.") },
+    { v = "V0.9.4f", text = T("자체 감사 수정 6건 — Drawing 더미(청크 사망 방지), 사일런트 CFrame 격리, 선택창 desync 차단, 트리거 OFF 잔상 제거, 카타나/무기/탄약 캐시.", "Self-audit: 6 crash/hitch fixes + caches.") },
+    { v = "V0.9.4e", text = T("사일런트 명중률 — HRP 속도 기반 예측 + 핑 보정. 카타나 감지 뷰모델 경로 추가 + 카타나 제외 기본 ON.", "Silent accuracy via HRP prediction + ping lead. Katana detect via viewmodels, exclusion default ON.") },
     { v = "V0.9.4d", text = T("언로드/재실행 튕김 수정 — 충돌 복구를 CanCollide=false(정상 기본값)로 변경 + 속도 0. true로 두면 지면 겹침 시 위로 발사됨.", "Unload fling fix — restore CanCollide=false + zero velocity.") },
     { v = "V0.9.4c", text = T("탭 정리 — Combat(레이지/트리거/무기)·Movement 탭 신설, Device Spoof는 Spoof로. Main은 에임봇/ESP만.", "Tab reorg — new Combat and Movement tabs, Device Spoof moved to Spoof.") },
     { v = "V0.9.4b", text = T("트리거봇 벽 체크 — 가려진 적에게는 발사 안 함. 벽 체크 토글 추가.", "Triggerbot wall check — no fire at occluded enemies.") },
@@ -8757,14 +8984,14 @@ table.insert(Connections, UserInputService.InputBegan:Connect(function(input, gp
     if input.UserInputType == Config.Aimbot.HoldKey then
         Holding = true
     elseif input.KeyCode == Enum.KeyCode.PageUp then
-        Config.Aimbot.FOV = math.min(400, Config.Aimbot.FOV + 10)
-        FOVCircle.Radius = Config.Aimbot.FOV
-        FOVOutline.Radius = Config.Aimbot.FOV
+        Config.Aimbot.FOV = math.clamp(Config.Aimbot.FOV + 10, 20, 400)
+        if FOVCircle then FOVCircle.Radius = Config.Aimbot.FOV end
+        if FOVOutline then FOVOutline.Radius = Config.Aimbot.FOV end
         pcall(function() Options.RIV_FOV:SetValue(Config.Aimbot.FOV) end)
     elseif input.KeyCode == Enum.KeyCode.PageDown then
-        Config.Aimbot.FOV = math.max(20, Config.Aimbot.FOV - 10)
-        FOVCircle.Radius = Config.Aimbot.FOV
-        FOVOutline.Radius = Config.Aimbot.FOV
+        Config.Aimbot.FOV = math.clamp(Config.Aimbot.FOV - 10, 20, 400)
+        if FOVCircle then FOVCircle.Radius = Config.Aimbot.FOV end
+        if FOVOutline then FOVOutline.Radius = Config.Aimbot.FOV end
         pcall(function() Options.RIV_FOV:SetValue(Config.Aimbot.FOV) end)
     end
 end))
@@ -8824,7 +9051,7 @@ table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
 
     if Config.Aimbot.Enabled and not MenuOpen then
         local canMove = true
-        if iswindowactive then
+        if typeof(iswindowactive) == "function" then
             local ok, active = pcall(iswindowactive)
             if ok then canMove = active end
         end
@@ -8904,6 +9131,7 @@ table.insert(Connections, Players.PlayerRemoving:Connect(function(plr)
     if o then HideESP(o) ESPObjects[plr] = nil end
     local hl = EspChams[plr]
     if hl then pcall(function() hl:Destroy() end) EspChams[plr] = nil end
+    if env._espTxtCache then env._espTxtCache[plr] = nil end
 end))
 
 local startupWpn = nil
