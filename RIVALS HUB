@@ -1,4 +1,4 @@
--- RIVALS HUB V0.9.5e | Madium | Obsidian UI
+-- RIVALS HUB V0.9.6.2 | Madium | Obsidian UI
 -- RightShift = 창 열기/닫기, 에임봇 ON이면 상시 작동(홀드 불필요)
 
 if getgenv().RivalsAimESP_Loaded then
@@ -65,7 +65,7 @@ getgenv().RivalsObsidian = Library
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
-local HUB_VERSION = "V0.9.5e"
+local HUB_VERSION = "V0.9.6.2"
 
 -- ============ Language (체험 언어 자동: ko → 한국어, else English) ============
 -- 우선순위: getgenv().RivalsLang > 파일(RivalsHub/lang.txt, 리조인 유지) > 플레이어 LocaleId > RobloxLocaleId > 기본 한국어
@@ -144,8 +144,11 @@ local function T(ko, en)
 end
 
 -- ============ Key System ============
--- 키를 변경하려면 실행 전에 getgenv().RIVALS_KEY = "원하는키" 를 입력하세요
-local RIVALS_KEY = getgenv().RIVALS_KEY or "FREE_KEY_3248902490107834"
+-- 키를 변경하려면 실행 전에 getgenv().RIVALS_KEYS = {"키1", "키2"} 를 입력하세요
+local RIVALS_KEYS = getgenv().RIVALS_KEYS
+if type(RIVALS_KEYS) ~= "table" then
+    RIVALS_KEYS = { "FREE_KEY_3248902490107834", "FREE_KEY_314#929#0&0103123" }
+end
 getgenv().RivalsKeyVerified = false
 
 -- 저장된 키 확인 (파일 기반, 리조인 유지)
@@ -157,7 +160,15 @@ pcall(function()
     end
 end)
 
-if SavedKey == RIVALS_KEY then
+local function isValidKey(key)
+    if not key or type(key) ~= "string" then return false end
+    for _, v in ipairs(RIVALS_KEYS) do
+        if key == v then return true end
+    end
+    return false
+end
+
+if SavedKey and isValidKey(SavedKey) then
     getgenv().RivalsKeyVerified = true
     print("[RivalsHub] 저장된 키로 인증 완료")
 else
@@ -242,7 +253,7 @@ else
 
     ConfirmBtn.MouseButton1Click:Connect(function()
         local inputKey = KeyBox.Text
-        if inputKey == RIVALS_KEY then
+        if isValidKey(inputKey) then
             getgenv().RivalsKeyVerified = true
             -- 키 저장 (파일 기반, 리조인 유지)
             pcall(function()
@@ -872,26 +883,33 @@ local function RagebotStep_KICIA_DISABLED()
         _rageCurTarget = ch
         _rageStableAt = now + (tonumber(S.ragebotStability) or 0.15)
     end
-    -- desync: 타깃 위/뒤로 순간이동 후 복구 (Kicia Plan의 n + __restore)
+    -- 데싱크: 타깃 주변으로 랜덤瞬間이동 (Stability 대기 중에도 유지)
     local isKnife = false
     pcall(function()
         local tool = ch:FindFirstChildOfClass("Tool")
         if tool and string.find(string.lower(tool.Name), "knife", 1, true) then isKnife = true end
     end)
     local oldCF, oldVel, oldRotVel = myRoot.CFrame, myRoot.Velocity, myRoot.RotVelocity
+    local tRoot = ch:FindFirstChild("HumanoidRootPart")
+    local base = (tRoot and tRoot.CFrame or head.CFrame)
+    -- 랜덤 오프셋: 좌우/위아래로 이동해서 에임보정 회피
+    local rx = math.random(-250, 250) / 100  -- -2.5 ~ 2.5 스터드
+    local ry = math.random(0, 400) / 100     -- 0 ~ 4 스터드 (위쪽으로)
+    local rz = math.random(-250, 250) / 100  -- -2.5 ~ 2.5 스터드
+    local offset = isKnife and CFrame.new(rx, ry + 4, rz) or CFrame.new(rx, ry, rz)
     pcall(function()
-        local tRoot = ch:FindFirstChild("HumanoidRootPart")
-        local base = (tRoot and tRoot.CFrame or head.CFrame)
-        myRoot.CFrame = base * (isKnife and CFrame.new(0, 6, 0) or CFrame.new(0, 1, 2))
-        pcall(function() RunService:UnbindFromRenderStep("__restore") end)
-        RunService:BindToRenderStep("__restore", 101, function()
-            if myRoot then
-                myRoot.CFrame = oldCF
-                myRoot.Velocity = oldVel
-                myRoot.RotVelocity = oldRotVel
-            end
-            RunService:UnbindFromRenderStep("__restore")
-        end)
+        myRoot.CFrame = base * offset
+        myRoot.AssemblyLinearVelocity = Vector3.zero
+        myRoot.AssemblyAngularVelocity = Vector3.zero
+    end)
+    pcall(function() RunService:UnbindFromRenderStep("__restore") end)
+    RunService:BindToRenderStep("__restore", 101, function()
+        if myRoot then
+            myRoot.CFrame = oldCF
+            myRoot.Velocity = oldVel
+            myRoot.RotVelocity = oldRotVel
+        end
+        RunService:UnbindFromRenderStep("__restore")
     end)
     if now < _rageStableAt then env._rageStage = "Stabilizing" return end
     local fr = math.max(tonumber(S.ragebotFireRate) or 0.05, 0.03)
@@ -1384,7 +1402,8 @@ end
 -- ============ SKIN REMOVED (V0.0.7.0) ============
 if false then -- SKIN-OFF-START
 getgenv()._AE_Skin = getgenv()._AE_Skin or {}
-local SkinState = getgenv()._AE_Skin
+local SkinState = getgenv()._AE_Skin or {}
+getgenv()._AE_Skin = SkinState
 SkinState.equip = SkinState.equip or {}
 env._harionEquip = SkinState.equip
 SkinState.log = SkinState.log or {}
@@ -1399,6 +1418,12 @@ local function slog(...)
     if #SkinState.log > 200 then table.remove(SkinState.log, 1) end
     print("[SkinLog]", line)
 end
+
+local SkinState = getgenv()._AE_Skin or {}
+getgenv()._AE_Skin = SkinState
+SkinState.equip = SkinState.equip or {}
+SkinState.log = SkinState.log or {}
+SkinState.replicate = SkinState.replicate or false
 
 local function reqGame(mod)
     if mod == nil then return nil end
@@ -5579,8 +5604,8 @@ local function SetFly(on)
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hrp or not hum or hum.Health <= 0 then
-        Notify(T("플라이", "Fly"), T("캐릭터가 있어야 켤 수 있어", "Requires a character"))
-        Config.Fly.Enabled = false
+        -- 캐릭터가 없어도 Enabled는 true 유지 (캐릭터 로드 후 SetFly 재시도)
+        Notify(T("플라이", "Fly"), T("캐릭터 로드 대기 중...", "Waiting for character..."))
         return
     end
     ClearFlyObjects()
@@ -7356,11 +7381,12 @@ AimbotBox:AddSlider("RIV_Strength", {
 AimbotBox:AddSlider("RIV_FOV", {
     Text = T("에임봇 FOV", "Aimbot FOV"),
     Default = Config.Aimbot.FOV,
-    Min = 20, Max = 400, Rounding = 0,
+    Min = 20, Max = 1500, Rounding = 0,
     Callback = function(v)
-        Config.Aimbot.FOV = math.clamp(math.floor(v), 20, 400)
+        Config.Aimbot.FOV = math.clamp(math.floor(v), 20, 1500)
         FOVCircle.Radius = Config.Aimbot.FOV
         FOVOutline.Radius = Config.Aimbot.FOV
+        pcall(function() Options.RIV_FOV:SetValue(Config.Aimbot.FOV) end)
     end,
 })
 do
@@ -7403,7 +7429,7 @@ AimbotBox:AddToggle("RIV_SilentShow", {
 AimbotBox:AddSlider("RIV_SilentFOV", {
     Text = T("사일런트 FOV", "Silent FOV"),
     Default = S.silentAimFOV,
-    Min = 50, Max = 600, Rounding = 0,
+    Min = 50, Max = 1500, Rounding = 0,
     Callback = function(v) S.silentAimFOV = math.floor(v) end,
 })
 do
@@ -8731,9 +8757,11 @@ end
 do
 local UpBox = Tabs.Updates:AddGroupbox({ Side = "Left", Name = "Changelog", IconName = "bell" })
 local RIV_CHANGELOG = {
+    { v = "V0.9.6.2", text = T("키 2개 추가 + FOV 1500 확장 — 키 FREE_KEY_314#929#0&0103123 추가, 에임봇/사일런트 FOV 최대 1500까지 확장.", "Added 2nd key + FOV extended to 1500 — added key FREE_KEY_314#929#0&0103123, aimbot/silent FOV max 1500.") },
+    { v = "V0.9.6.1", text = T("플라이 즉시 작동 수정 — 캐릭터 로드 전 Enabled를 false로 하지 않음, 캐릭터 로드 후 자동 적용.", "Fly instant fix — don't set Enabled=false before character load, auto-apply on character load.") },
+    { v = "V0.9.6", text = T("레이지봇 데싱크 개선 — 랜덤 오프셋(좌우/위아래), 발사 직전 순간이동+즉시 복구, 총기 타입별 차등 적용, Stability 대기 중에도 데싱크 유지.", "Ragebot desync improve — random offsets, fire-then-restore desync, weapon-type offsets, desync during stability wait.") },
     { v = "V0.9.5e", text = T("사일런트 FOV 100% 작동 — 메인 루프에서 원이 없으면 자동 재생성, S.silentAimOn + S.silentShowFOV 조건에서 항상 표시.", "Silent FOV 100% — auto-recreate circle in main loop, always visible when Silent Aim + Show FOV enabled.") },
     { v = "V0.9.5d", text = T("레이지봇 명중률 개선 — 타겟 선정 시 HitboxHead 우선 + FOV 내 시야 체크 + 거리/화면중앙 가중치. 자동 발사 시 카메라를 타겟 방향으로 조준.", "Ragebot accuracy — HitboxHead priority + FOV visibility + distance/screen-center weight. Auto-fire aims camera at target.") },
-    { v = "V0.9.5c", text = T("키 시스템 개선 — 저장된 키 파일로 리조인 유지, 키 입력 시 마우스 강제 표시(1인칭 포함), 확인 후 마우스 상태 복구.", "Key system — saved key persists after rejoin, mouse forced visible during input (1st person incl.), mouse state restored after confirm.") },
     { v = "V0.9.5c", text = T("키 시스템 개선 — 저장된 키 파일로 리조인 유지, 키 입력 시 마우스 강제 표시(1인칭 포함), 확인 후 마우스 상태 복구.", "Key system — saved key persists after rejoin, mouse forced visible during input (1st person incl.), mouse state restored after confirm.") },
     { v = "V0.9.5b", text = T("자체 감사 수정 6건 — MenuOpen 기본값 false(메뉴 열림 상태 유지 버그), iswindowactive 정의누락 대비, FOVCircle/FOVOutline nil 체크, 언로드 시 DO 안전 제거, 페이지 업/다운 nil 체크.", "Self-audit: 6 fixes — MenuOpen default false, iswindowactive nil-guard, FOV circle nil-guard, unload DO cleanup, page up/down nil-guard.") },
     { v = "V0.9.5a", text = T("키 시스템 수정 — 키를 FREE_KEY_3248902490107834로 고정, 인증 완료 로그 추가. 키 입력 후 메인 GUI 실행.", "Key system fix — key set to FREE_KEY_3248902490107834, auth complete log added.") },
@@ -9161,9 +9189,29 @@ table.insert(Connections, RunService.Heartbeat:Connect(function(dt)
                                     cam.CFrame = newCF
                                 end)
                             end
+                            -- 데싱크: 발사 직전 타겟 주변으로 순간이동 후 즉시 복구
+                            local oldCF, oldVel, oldRotVel = myRoot.CFrame, myRoot.Velocity, myRoot.RotVelocity
+                            local tRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+                            local base = (tRoot and tRoot.CFrame or targetHead.CFrame)
+                            local rx = math.random(-200, 200) / 100
+                            local ry = math.random(0, 300) / 100
+                            local rz = math.random(-200, 200) / 100
+                            pcall(function()
+                                myRoot.CFrame = base * CFrame.new(rx, ry, rz)
+                                myRoot.AssemblyLinearVelocity = Vector3.zero
+                                myRoot.AssemblyAngularVelocity = Vector3.zero
+                            end)
+                            env._rageAutoLast = now
+                            env._clickFn()
+                            -- 즉시 원위치 복구
+                            pcall(function()
+                                if myRoot then
+                                    myRoot.CFrame = oldCF
+                                    myRoot.Velocity = oldVel
+                                    myRoot.RotVelocity = oldRotVel
+                                end
+                            end)
                         end
-                        env._rageAutoLast = now
-                        env._clickFn()
                     end
                 end
             end
